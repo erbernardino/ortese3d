@@ -27,17 +27,22 @@ def test_model_validate_requires_stl_b64():
     assert response.status_code == 400
     assert "stl_b64" in response.json()["detail"]
 
-def test_export_stl_stub():
+def test_export_stl_requires_stl_b64():
     response = client.post("/export/stl", json={})
-    assert response.status_code == 200
-    assert response.json() == {"message": "not implemented"}
+    assert response.status_code == 400
+    assert "stl_b64" in response.json()["detail"]
 
-def test_export_gcode_stub():
+def test_export_gcode_requires_stl_b64():
     response = client.post("/export/gcode", json={})
-    assert response.status_code == 200
-    assert response.json() == {"message": "not implemented"}
+    assert response.status_code == 400
+    assert "stl_b64" in response.json()["detail"]
 
-def test_export_pdf_stub():
-    response = client.post("/export/pdf", json={})
+def test_export_pdf_returns_pdf():
+    response = client.post("/export/pdf", json={
+        "type": "clinical",
+        "patient": {"name": "Test"},
+        "measurements": {},
+        "model_meta": {},
+    })
     assert response.status_code == 200
-    assert response.json() == {"message": "not implemented"}
+    assert response.content[:4] == b"%PDF"
