@@ -4,6 +4,7 @@ from python.routers import model, export
 
 app = FastAPI(title="OrteseCAD API")
 
+# CORS allow-all: intentional for localhost-only communication with Electron renderer
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
