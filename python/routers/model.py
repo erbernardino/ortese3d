@@ -65,4 +65,17 @@ async def import_scan(file: UploadFile = File(...)):
 
 @router.post("/validate")
 def validate_model(data: dict):
-    return {"message": "not implemented"}
+    stl_b64 = data.get("stl_b64")
+    if not stl_b64:
+        raise HTTPException(status_code=400, detail="stl_b64 é obrigatório")
+    try:
+        raw = base64.b64decode(stl_b64)
+        mesh = trimesh.load(io.BytesIO(raw), file_type="stl")
+        from python.services.validator import validate_mesh
+        return validate_mesh(
+            mesh,
+            min_thickness_mm=data.get("min_thickness_mm", 2.0),
+            min_clearance_mm=data.get("min_clearance_mm", 3.0),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

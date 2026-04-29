@@ -22,10 +22,10 @@ def test_model_generate_stub():
     assert "stl_b64" in data
     assert data["vertex_count"] > 100
 
-def test_model_validate_stub():
+def test_model_validate_requires_stl_b64():
     response = client.post("/model/validate", json={})
-    assert response.status_code == 200
-    assert response.json() == {"message": "not implemented"}
+    assert response.status_code == 400
+    assert "stl_b64" in response.json()["detail"]
 
 def test_export_stl_stub():
     response = client.post("/export/stl", json={})
