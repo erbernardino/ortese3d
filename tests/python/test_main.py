@@ -9,9 +9,18 @@ def test_health():
     assert response.json() == {"status": "ok"}
 
 def test_model_generate_stub():
-    response = client.post("/model/generate", json={})
+    response = client.post("/model/generate", json={
+        "circ_occipital": 380,
+        "circ_frontal": 370,
+        "diag_a": 135,
+        "diag_b": 118,
+        "cvai": 8.4,
+        "height": 72,
+    })
     assert response.status_code == 200
-    assert response.json() == {"message": "not implemented"}
+    data = response.json()
+    assert "stl_b64" in data
+    assert data["vertex_count"] > 100
 
 def test_model_validate_stub():
     response = client.post("/model/validate", json={})
