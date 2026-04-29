@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { caseService } from '../services/caseService'
 import { patientService } from '../services/patientService'
+import { notificationService } from '../services/notificationService'
 
 const STATUS_LABEL = {
   draft: 'Rascunho', sent: 'Enviado', in_progress: 'Em andamento',
@@ -14,6 +15,12 @@ export default function DashboardPage() {
   const navigate = useNavigate()
   const [cases, setCases] = useState([])
   const [patients, setPatients] = useState({})
+  const [notifications, setNotifications] = useState([])
+
+  useEffect(() => {
+    if (!user) return
+    return notificationService.subscribe(user.uid, setNotifications)
+  }, [user])
 
   useEffect(() => {
     if (!user) return
@@ -37,6 +44,14 @@ export default function DashboardPage() {
         <h1 style={{ margin: 0 }}>OrteseCAD</h1>
         <div>
           <span>{user?.name} — {user?.role === 'doctor' ? 'Médico' : 'Ortesista'}</span>
+          {notifications.length > 0 && (
+            <span style={{
+              background: '#fc8181', color: 'white', borderRadius: '50%',
+              padding: '2px 7px', fontSize: 12, marginLeft: 8, fontWeight: 700,
+            }}>
+              {notifications.length}
+            </span>
+          )}
           <button onClick={logout} style={{ marginLeft: 16 }}>Sair</button>
         </div>
       </div>
