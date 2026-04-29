@@ -2,10 +2,12 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './hooks/useAuth'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
+import PatientFormPage from './pages/PatientFormPage'
+import CasePage from './pages/CasePage'
 
 function AuthGuard({ children }) {
   const { user } = useAuth()
-  if (user === undefined) return <div>Carregando...</div>
+  if (user === undefined) return <div style={{ padding: 40 }}>Carregando...</div>
   if (!user) return <Navigate to="/login" replace />
   return children
 }
@@ -15,9 +17,10 @@ export default function App() {
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/" element={
-          <AuthGuard><DashboardPage /></AuthGuard>
-        } />
+        <Route path="/" element={<AuthGuard><DashboardPage /></AuthGuard>} />
+        <Route path="/patient/new" element={<AuthGuard><PatientFormPage /></AuthGuard>} />
+        <Route path="/case/new" element={<AuthGuard><CasePage /></AuthGuard>} />
+        <Route path="/case/:caseId" element={<AuthGuard><CasePage /></AuthGuard>} />
       </Routes>
     </BrowserRouter>
   )
