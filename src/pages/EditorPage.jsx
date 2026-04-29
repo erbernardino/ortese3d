@@ -100,7 +100,12 @@ export default function EditorPage() {
 
         {currentStl && (
           <div style={{ marginTop: 16 }}>
-            <button onClick={() => navigate(`/validation/${caseId}`)}
+            <button onClick={() => {
+              if (currentStl) {
+                localStorage.setItem(`stl_${caseId}`, currentStl)
+                navigate(`/validation/${caseId}`)
+              }
+            }}
               style={{ width: '100%', padding: '10px', background: '#48c78e', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
               Validar e Exportar →
             </button>
