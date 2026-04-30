@@ -96,6 +96,66 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       geo.computeVertexNormals()
     },
 
+    setAsymmetryHint(side) {
+      const { scene, mesh, asymmetryGroup } = stateRef.current
+      if (asymmetryGroup) {
+        scene.remove(asymmetryGroup)
+        asymmetryGroup.traverse(o => {
+          if (o.geometry) o.geometry.dispose()
+          if (o.material) o.material.dispose()
+        })
+      }
+      if (!side || !mesh) {
+        stateRef.current.asymmetryGroup = null
+        return
+      }
+      const bbox = new THREE.Box3().setFromObject(mesh)
+      const size = new THREE.Vector3()
+      bbox.getSize(size)
+      const half = size.clone().multiplyScalar(0.5)
+      const center = new THREE.Vector3()
+      bbox.getCenter(center)
+
+      // posterior do lado afetado: -x, ±y conforme side, z médio-alto
+      const ySign = side === 'right' ? +1 : -1
+      const pos = new THREE.Vector3(
+        center.x + (-0.55) * half.x,
+        center.y + ySign * 0.7 * half.y,
+        center.z + 0.3 * half.z,
+      )
+      const radius = Math.max(half.x, half.y) * 0.22
+
+      const group = new THREE.Group()
+      const sphereGeo = new THREE.SphereGeometry(radius, 24, 18)
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xfc8181, transparent: true, opacity: 0.45,
+        emissive: 0xfc8181, emissiveIntensity: 0.4,
+      })
+      const m = new THREE.Mesh(sphereGeo, mat)
+      m.position.copy(pos)
+      group.add(m)
+
+      // Sprite com label "Lado plano"
+      const c = document.createElement('canvas')
+      c.width = 256; c.height = 64
+      const ctx = c.getContext('2d')
+      ctx.fillStyle = 'rgba(252,129,129,0.9)'
+      ctx.fillRect(0, 0, 256, 64)
+      ctx.font = 'bold 28px sans-serif'
+      ctx.fillStyle = 'white'
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+      ctx.fillText('🚩 Lado plano', 128, 32)
+      const tex = new THREE.CanvasTexture(c)
+      const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true })
+      const sprite = new THREE.Sprite(spriteMat)
+      sprite.scale.set(40, 10, 1)
+      sprite.position.copy(pos).add(new THREE.Vector3(0, 0, radius * 1.3))
+      group.add(sprite)
+
+      scene.add(group)
+      stateRef.current.asymmetryGroup = group
+    },
+
     setSuggestionZones(zones) {
       const { scene, mesh, suggestionGroup } = stateRef.current
       if (suggestionGroup) {

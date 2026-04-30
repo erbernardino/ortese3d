@@ -1,5 +1,5 @@
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useCase } from '../hooks/useCase'
 import { useAuth } from '../hooks/useAuth'
 import { caseService } from '../services/caseService'
@@ -19,14 +19,19 @@ export default function CasePage() {
   const [patient, setPatient] = useState(null)
   const [currentCaseId, setCurrentCaseId] = useState(caseId)
   const { caseData, loading } = useCase(currentCaseId)
+  const creatingRef = useRef(false)
 
   useEffect(() => {
     if (caseId) return
     const patientId = searchParams.get('patientId')
     if (!patientId || !user) return
+    if (creatingRef.current) return        // bloqueia 2ª chamada do StrictMode
+    creatingRef.current = true
     patientService.get(patientId).then(p => {
-      if (!p) return
-      caseService.create(p, user.uid).then(setCurrentCaseId)
+      if (!p) { creatingRef.current = false; return }
+      caseService.create(p, user.uid)
+        .then(setCurrentCaseId)
+        .finally(() => { creatingRef.current = false })
     })
   }, [user])
 

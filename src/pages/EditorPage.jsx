@@ -121,6 +121,8 @@ export default function EditorPage() {
       push(result.stl_b64)
       setModelMeta(result)
       setIsScanRaw(false)
+      const side = detectAffectedSide(caseData?.patientDiagnosis)
+      viewerRef.current?.setAsymmetryHint(side)
       analyticsService.track('model_generated', {
         source: 'scan',
         wall_mm: thickness,
@@ -152,6 +154,8 @@ export default function EditorPage() {
       viewerRef.current?.loadStlBase64(result.stl_b64)
       push(result.stl_b64)
       setModelMeta(result)
+      const side = detectAffectedSide(caseData?.patientDiagnosis)
+      viewerRef.current?.setAsymmetryHint(side)
       analyticsService.track('model_generated', {
         source: 'parametric',
         wall_mm: thickness,
@@ -353,6 +357,14 @@ export default function EditorPage() {
       </div>
     </div>
   )
+}
+
+function detectAffectedSide(diagnosis) {
+  if (!diagnosis) return null
+  const d = diagnosis.toLowerCase()
+  if (/\b(direit|right)/.test(d)) return 'right'
+  if (/\b(esquer|left)/.test(d)) return 'left'
+  return null
 }
 
 function ViewControls({ onView }) {
