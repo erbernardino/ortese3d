@@ -4,6 +4,8 @@ import { useCase } from '../hooks/useCase'
 import { ValidationChecklist } from '../components/ValidationChecklist'
 import { storageService } from '../services/storageService'
 import { analyticsService } from '../services/analyticsService'
+import { evaluationService } from '../services/evaluationService'
+import { pythonApi } from '../services/pythonApi'
 
 const PYTHON_BASE = 'http://localhost:8765'
 
@@ -16,6 +18,8 @@ export default function ValidationPage() {
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
   const [stlB64, setStlB64] = useState(null)
+  const [evaluations, setEvaluations] = useState([])
+  const [suggestion, setSuggestion] = useState(null)
 
   useEffect(() => {
     if (!caseData?.modelStoragePath) return
@@ -23,6 +27,33 @@ export default function ValidationPage() {
       .then(setStlB64)
       .catch(e => setError(`Falha ao baixar modelo: ${e.message}`))
   }, [caseData?.modelStoragePath])
+
+  useEffect(() => {
+    if (!caseId) return
+    evaluationService.list(caseId)
+      .then(list => {
+        // inclui medidas iniciais como baseline
+        const baseline = caseData?.measurements && caseData.createdAt
+          ? [{
+              date: caseData.createdAt?.toDate?.()?.toISOString().slice(0, 10) ?? null,
+              measurements: caseData.measurements,
+              notes: 'Avaliação inicial',
+            }]
+          : []
+        setEvaluations([...baseline, ...list])
+      })
+      .catch(() => {})
+  }, [caseId, caseData])
+
+  useEffect(() => {
+    if (!caseData?.measurements) return
+    pythonApi.suggestZones({
+      measurements: caseData.measurements,
+      diagnosis: caseData.patientDiagnosis ?? '',
+    })
+      .then(setSuggestion)
+      .catch(() => {})
+  }, [caseData?.measurements, caseData?.patientDiagnosis])
 
   async function validate() {
     if (!stlB64) {
@@ -120,9 +151,19 @@ export default function ValidationPage() {
               loading={exporting === 'ortese_clinical.pdf'}
               onClick={() => downloadBinary('/export/pdf', 'ortese_clinical.pdf', {
                 type: 'clinical',
-                patient: caseData?.patient || {},
+                patient: {
+                  name: caseData?.patientName,
+                  diagnosis: caseData?.patientDiagnosis,
+                  birthDate: caseData?.patientBirthDate,
+                },
                 measurements: caseData?.measurements || {},
-                model_meta: { volume_cm3: result.volume_cm3, weight_g: result.weight_g },
+                model_meta: {
+                  volume_cm3: result.volume_cm3,
+                  weight_g: result.weight_g,
+                  min_thickness_mm: result.min_thickness_mm,
+                },
+                evaluations,
+                suggestion,
               })}
             />
             <ExportButton
@@ -131,9 +172,18 @@ export default function ValidationPage() {
               loading={exporting === 'ortese_technical.pdf'}
               onClick={() => downloadBinary('/export/pdf', 'ortese_technical.pdf', {
                 type: 'technical',
-                patient: caseData?.patient || {},
+                patient: {
+                  name: caseData?.patientName,
+                  diagnosis: caseData?.patientDiagnosis,
+                },
                 measurements: caseData?.measurements || {},
-                model_meta: { volume_cm3: result.volume_cm3, weight_g: result.weight_g },
+                model_meta: {
+                  volume_cm3: result.volume_cm3,
+                  weight_g: result.weight_g,
+                  vertex_count: result.vertex_count,
+                  face_count: result.face_count,
+                  min_thickness_mm: result.min_thickness_mm,
+                },
               })}
             />
           </div>

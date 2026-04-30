@@ -56,12 +56,20 @@ def export_pdf_endpoint(data: dict):
     patient = data.get("patient", {})
     measurements = data.get("measurements", {})
     model_meta = data.get("model_meta", {})
+    evaluations = data.get("evaluations") or []
+    suggestion = data.get("suggestion")
 
     try:
         if pdf_type == "technical":
-            pdf_bytes = generate_technical_pdf(patient, measurements, model_meta)
+            pdf_bytes = generate_technical_pdf(
+                patient, measurements, model_meta,
+                evaluations=evaluations, suggestion=suggestion,
+            )
         else:
-            pdf_bytes = generate_clinical_pdf(patient, measurements, model_meta)
+            pdf_bytes = generate_clinical_pdf(
+                patient, measurements, model_meta,
+                evaluations=evaluations, suggestion=suggestion,
+            )
 
         return Response(
             content=pdf_bytes,
