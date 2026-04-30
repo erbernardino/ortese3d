@@ -29,6 +29,8 @@ export default function EditorPage() {
   const [annotateActive, setAnnotateActive] = useState(false)
   const [scanStl, setScanStl] = useState(null)
   const [showScanOverlay, setShowScanOverlay] = useState(false)
+  const [showGrid, setShowGrid] = useState(false)
+  const [hoverInfo, setHoverInfo] = useState(null)
   const fileInputRef = useRef(null)
   const [sculptActive, setSculptActive] = useState(false)
   const [sculptRadius, setSculptRadius] = useState(8)
@@ -60,6 +62,47 @@ export default function EditorPage() {
     const next = !showScanOverlay
     setShowScanOverlay(next)
     viewerRef.current?.setOverlayStl(next ? scanStl : null)
+  }
+
+  async function saveVariant() {
+    if (!currentStl) return
+    const name = window.prompt('Nome da variante (ex: A, B, "ajuste fino"):')
+    if (!name) return
+    try {
+      const path = await storageService.uploadVariantStl(caseId, name, currentStl)
+      const next = [...(caseData?.variants ?? []), {
+        name,
+        storagePath: path,
+        createdAt: new Date().toISOString(),
+        volumeCm3: modelMeta?.volume_cm3 ?? null,
+        weightG: modelMeta?.weight_g ?? null,
+      }]
+      await caseService.update(caseId, { variants: next })
+    } catch (e) {
+      setError(`Falha ao salvar variante: ${e.message}`)
+    }
+  }
+
+  async function loadVariant(v) {
+    try {
+      const stl = await storageService.downloadStlAsBase64(v.storagePath)
+      viewerRef.current?.loadStlBase64(stl)
+      push(stl)
+      setModelMeta({
+        stl_b64: stl,
+        volume_cm3: v.volumeCm3,
+        weight_g: v.weightG,
+        is_watertight: true,
+      })
+    } catch (e) {
+      setError(`Falha ao carregar variante: ${e.message}`)
+    }
+  }
+
+  function toggleGrid() {
+    const next = !showGrid
+    setShowGrid(next)
+    viewerRef.current?.setGridVisible(next)
   }
 
   async function handleAnnotationCreate(position) {
@@ -230,6 +273,7 @@ export default function EditorPage() {
           ref={viewerRef}
           onSculptCommit={commitSculpt}
           onAnnotationCreate={handleAnnotationCreate}
+          onHover={setHoverInfo}
         />
         <ViewControls onView={p => viewerRef.current?.setView(p)} />
         {annotateActive && (
@@ -238,6 +282,22 @@ export default function EditorPage() {
             background: 'rgba(252,191,36,0.95)', color: '#1a202c',
             padding: '6px 12px', borderRadius: 6, fontSize: 13, fontWeight: 600,
           }}>📝 Modo anotação — clique no modelo</div>
+        )}
+        {hoverInfo && (
+          <div style={{
+            position: 'fixed', left: hoverInfo.clientX + 16, top: hoverInfo.clientY + 16,
+            background: 'rgba(15,15,26,0.92)', color: '#cbd5e0',
+            padding: '6px 10px', borderRadius: 4, fontSize: 11,
+            fontFamily: 'ui-monospace, monospace', pointerEvents: 'none',
+            border: '1px solid rgba(255,255,255,0.1)', zIndex: 1000,
+          }}>
+            <div>X: {hoverInfo.x.toFixed(1)} mm</div>
+            <div>Y: {hoverInfo.y.toFixed(1)} mm</div>
+            <div>Z: {hoverInfo.z.toFixed(1)} mm</div>
+            <div style={{ color: '#fbbf24', marginTop: 2 }}>
+              dist origem: {hoverInfo.distance.toFixed(1)} mm
+            </div>
+          </div>
         )}
       </div>
 
@@ -311,6 +371,15 @@ export default function EditorPage() {
               cursor: suggesting ? 'wait' : 'pointer' }}>
             {suggesting ? 'Analisando...' : '🧠 Sugerir Zonas (IA)'}
           </button>
+          <button onClick={toggleGrid} disabled={!currentStl}
+            style={{ marginTop: 8, width: '100%', padding: '8px',
+              background: showGrid ? '#3182ce' : 'rgba(255,255,255,0.06)',
+              color: showGrid ? 'white' : '#cbd5e0',
+              border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6,
+              cursor: currentStl ? 'pointer' : 'not-allowed', fontSize: 12 }}>
+            {showGrid ? '📐 Ocultar régua (10mm)' : '📐 Mostrar régua (10mm)'}
+          </button>
+
           {scanStl && (
             <button onClick={toggleScanOverlay} disabled={!currentStl}
               style={{ marginTop: 8, width: '100%', padding: '8px',
@@ -335,6 +404,16 @@ export default function EditorPage() {
             list={caseData?.annotations ?? []}
             onDelete={handleDeleteAnnotation}
           />
+
+          <button onClick={saveVariant} disabled={!currentStl}
+            style={{ marginTop: 8, width: '100%', padding: '8px',
+              background: 'rgba(255,255,255,0.06)', color: '#cbd5e0',
+              border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6,
+              cursor: currentStl ? 'pointer' : 'not-allowed', fontSize: 12 }}>
+            💾 Salvar como variante
+          </button>
+
+          <VariantsList list={caseData?.variants ?? []} onLoad={loadVariant} />
 
           {suggestion && (
             <ZoneSuggestion
@@ -428,6 +507,35 @@ export default function EditorPage() {
             </button>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+function VariantsList({ list, onLoad }) {
+  if (!list.length) return null
+  return (
+    <div style={{ marginTop: 10, padding: 10,
+      background: 'rgba(99,179,237,0.08)', borderRadius: 6,
+      border: '1px solid rgba(99,179,237,0.25)' }}>
+      <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6,
+        textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        Variantes ({list.length})
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {list.map((v, i) => (
+          <button key={i} onClick={() => onLoad(v)}
+            style={{ display: 'flex', justifyContent: 'space-between',
+              alignItems: 'center', padding: '6px 8px',
+              background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(99,179,237,0.2)',
+              borderRadius: 4, color: '#cbd5e0', cursor: 'pointer',
+              fontSize: 12, textAlign: 'left' }}>
+            <span style={{ color: '#63b3ed', fontWeight: 600 }}>{v.name}</span>
+            <span style={{ fontSize: 10, opacity: 0.6 }}>
+              {v.volumeCm3 != null ? `${v.volumeCm3} cm³` : '—'}
+            </span>
+          </button>
+        ))}
       </div>
     </div>
   )

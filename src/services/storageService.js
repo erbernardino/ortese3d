@@ -22,6 +22,14 @@ export const storageService = {
     return path
   },
 
+  async uploadVariantStl(caseId, name, stlB64) {
+    const safe = name.replace(/[^a-z0-9-_]/gi, '_').toLowerCase()
+    const path = `cases/${caseId}/variants/${safe}-${Date.now()}.stl`
+    const r = ref(storage, path)
+    await uploadBytes(r, base64ToBytes(stlB64), { contentType: 'application/sla' })
+    return path
+  },
+
   async uploadEvaluationPhoto(caseId, evalId, file, idx) {
     const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
     const path = `cases/${caseId}/evaluations/${evalId}/photo-${idx}.${ext}`

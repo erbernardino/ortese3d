@@ -5,9 +5,11 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js'
 import { ViewHelper } from 'three/examples/jsm/helpers/ViewHelper.js'
 
-export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptCommit, onAnnotationCreate }, ref) {
+export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptCommit, onAnnotationCreate, onHover }, ref) {
   const mountRef = useRef(null)
   const stateRef = useRef({})
+  const onHoverRef = useRef(onHover)
+  onHoverRef.current = onHover
   const sculptRef = useRef({
     active: false, radius: 8, strength: 0.5,
     mode: 'push', symmetry: 'none',
@@ -97,6 +99,28 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       }
       positions.needsUpdate = true
       geo.computeVertexNormals()
+    },
+
+    setGridVisible(visible) {
+      const { scene, gridHelper } = stateRef.current
+      if (gridHelper) {
+        scene.remove(gridHelper)
+        gridHelper.geometry?.dispose()
+        gridHelper.material?.dispose?.()
+      }
+      if (!visible) {
+        stateRef.current.gridHelper = null
+        return
+      }
+      // Grade no plano XY (chão), 200mm × 200mm com divisões a cada 10mm
+      const size = 200
+      const divisions = 20
+      const grid = new THREE.GridHelper(size, divisions, 0x4a5568, 0x2d3748)
+      // GridHelper padrão fica no plano XZ; rotaciona pra ficar no XY (Z-up)
+      grid.rotation.x = Math.PI / 2
+      grid.position.z = -90    // logo abaixo do mesh
+      scene.add(grid)
+      stateRef.current.gridHelper = grid
     },
 
     setOverlayStl(stlB64) {
@@ -560,6 +584,25 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       }
     }
     function onPointerMove(e) {
+      // Hover sem botão pressionado — emite info pro tooltip
+      if (!pointerDown && onHoverRef.current) {
+        const { mesh } = stateRef.current
+        if (mesh) {
+          getCanvasPointer(e)
+          raycaster.setFromCamera(pointerNDC, camera)
+          const hits = raycaster.intersectObject(mesh)
+          if (hits.length) {
+            const local = mesh.worldToLocal(hits[0].point.clone())
+            const dist = local.length()
+            onHoverRef.current({
+              x: local.x, y: local.y, z: local.z, distance: dist,
+              clientX: e.clientX, clientY: e.clientY,
+            })
+          } else {
+            onHoverRef.current(null)
+          }
+        }
+      }
       if (!sculptRef.current.active || !pointerDown) return
       if (sculptRef.current.mode === 'grab') {
         applyGrabMove(e)
@@ -573,11 +616,15 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       grabState = null
       onSculptCommit?.()
     }
+    function onPointerLeave() {
+      onHoverRef.current?.(null)
+      onPointerUp()
+    }
 
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
     renderer.domElement.addEventListener('pointermove', onPointerMove)
     renderer.domElement.addEventListener('pointerup', onPointerUp)
-    renderer.domElement.addEventListener('pointerleave', onPointerUp)
+    renderer.domElement.addEventListener('pointerleave', onPointerLeave)
 
     stateRef.current = { scene, camera, renderer, controls }
 
@@ -608,7 +655,7 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       renderer.domElement.removeEventListener('pointerdown', onPointerDown)
       renderer.domElement.removeEventListener('pointermove', onPointerMove)
       renderer.domElement.removeEventListener('pointerup', onPointerUp)
-      renderer.domElement.removeEventListener('pointerleave', onPointerUp)
+      renderer.domElement.removeEventListener('pointerleave', onPointerLeave)
       if (mount.contains(renderer.domElement)) mount.removeChild(renderer.domElement)
       renderer.dispose()
     }
