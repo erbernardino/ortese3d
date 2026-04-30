@@ -1,18 +1,69 @@
-rules_version='2'
+rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function caseRefBy(caseId) {
+      return get(/databases/$(database)/documents/cases/$(caseId));
+    }
+
+    // Perfis: cada usuário só lê e escreve o próprio doc
+    match /users/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow create: if isSignedIn() && request.auth.uid == uid
+                    && request.resource.data.role in ['doctor', 'orthotist'];
+      allow update: if isSignedIn() && request.auth.uid == uid;
+      allow delete: if false;
+    }
+
+    // Pacientes: somente o médico criador acessa
+    // (ortesistas leem dados denormalizados no doc do caso)
+    match /patients/{patientId} {
+      allow read:   if isSignedIn() && resource.data.createdBy == request.auth.uid;
+      allow create: if isSignedIn()
+                    && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isSignedIn() && resource.data.createdBy == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Casos: leitura/escrita por médico criador OU ortesista atribuído
+    match /cases/{caseId} {
+      allow read: if isSignedIn() && (
+        resource.data.createdBy == request.auth.uid ||
+        resource.data.assignedTo == request.auth.uid
+      );
+      allow create: if isSignedIn()
+                    && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isSignedIn() && (
+        resource.data.createdBy == request.auth.uid ||
+        resource.data.assignedTo == request.auth.uid
+      );
+      allow delete: if false;
+    }
+
+    // Notificações:
+    //   - leitura/marcação só pelo destinatário
+    //   - criação só por quem é parte do case referenciado
+    match /notifications/{id} {
+      allow read, update, delete:
+        if isSignedIn() && resource.data.toUserId == request.auth.uid;
+      allow create:
+        if isSignedIn()
+        && request.resource.data.toUserId is string
+        && request.resource.data.caseId is string
+        && (
+          caseRefBy(request.resource.data.caseId).data.createdBy == request.auth.uid ||
+          caseRefBy(request.resource.data.caseId).data.assignedTo == request.auth.uid
+        );
+    }
+
+    // Bloqueia tudo o mais
     match /{document=**} {
-      // This rule allows anyone with your database reference to view, edit,
-      // and delete all data in your database. It is useful for getting
-      // started, but it is configured to expire after 30 days because it
-      // leaves your app open to attackers. At that time, all client
-      // requests to your database will be denied.
-      //
-      // Make sure to write security rules for your app before that time, or
-      // else all client requests to your database will be denied until you
-      // update your rules.
-      allow read, write: if request.time < timestamp.date(2026, 5, 29);
+      allow read, write: if false;
     }
   }
 }

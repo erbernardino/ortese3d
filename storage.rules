@@ -1,10 +1,20 @@
 rules_version = '2';
 
-// Craft rules based on data in your Firestore database
-// allow write: if firestore.get(
-//    /databases/(default)/documents/users/$(request.auth.uid)).data.isAdmin;
 service firebase.storage {
   match /b/{bucket}/o {
+
+    // STL e arquivos do caso
+    // Autorização cross-service: lê o doc Firestore do case
+    match /cases/{caseId}/{file=**} {
+      allow read, write:
+        if request.auth != null
+        && firestore.exists(/databases/(default)/documents/cases/$(caseId))
+        && (
+          firestore.get(/databases/(default)/documents/cases/$(caseId)).data.createdBy == request.auth.uid ||
+          firestore.get(/databases/(default)/documents/cases/$(caseId)).data.assignedTo == request.auth.uid
+        );
+    }
+
     match /{allPaths=**} {
       allow read, write: if false;
     }
