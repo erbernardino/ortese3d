@@ -64,6 +64,13 @@ export default function EditorPage() {
     viewerRef.current?.setAnnotations(next)
   }
 
+  async function handleDeleteAnnotation(index) {
+    const list = caseData?.annotations ?? []
+    const next = list.filter((_, i) => i !== index)
+    await caseService.update(caseId, { annotations: next })
+    viewerRef.current?.setAnnotations(next)
+  }
+
   function commitSculpt() {
     const stlB64 = viewerRef.current?.exportStlBase64()
     if (stlB64) {
@@ -304,6 +311,11 @@ export default function EditorPage() {
             {annotateActive ? '📝 Modo anotação ativo (sair)' : '📝 Adicionar anotação'}
           </button>
 
+          <AnnotationsList
+            list={caseData?.annotations ?? []}
+            onDelete={handleDeleteAnnotation}
+          />
+
           {suggestion && (
             <ZoneSuggestion
               s={suggestion}
@@ -396,6 +408,38 @@ export default function EditorPage() {
             </button>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+function AnnotationsList({ list, onDelete }) {
+  if (!list.length) return null
+  return (
+    <div style={{ marginTop: 10, padding: 10,
+      background: 'rgba(251,191,36,0.08)', borderRadius: 6,
+      border: '1px solid rgba(251,191,36,0.25)' }}>
+      <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6,
+        textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        Anotações ({list.length})
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {list.map((a, i) => (
+          <div key={i} style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '5px 8px', background: 'rgba(255,255,255,0.04)',
+            borderRadius: 4, fontSize: 12,
+          }}>
+            <span style={{ flex: 1, color: '#fbbf24', overflow: 'hidden',
+              textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {a.text}
+            </span>
+            <button onClick={() => onDelete(i)}
+              style={{ background: 'none', border: 'none', color: '#888',
+                cursor: 'pointer', fontSize: 14, padding: '0 4px' }}
+              title="Remover anotação">✕</button>
+          </div>
+        ))}
       </div>
     </div>
   )
