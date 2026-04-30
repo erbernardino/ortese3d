@@ -31,11 +31,15 @@ export default function EditorPage() {
   const [sculptRadius, setSculptRadius] = useState(8)
   const [sculptStrength, setSculptStrength] = useState(0.5)
   const [sculptMode, setSculptMode] = useState('push')
+  const [sculptSymmetry, setSculptSymmetry] = useState('none')
 
   function toggleSculpt() {
     const next = !sculptActive
     setSculptActive(next)
-    viewerRef.current?.setSculptMode({ active: next, radius: sculptRadius, strength: sculptStrength, mode: sculptMode })
+    viewerRef.current?.setSculptMode({
+      active: next, radius: sculptRadius, strength: sculptStrength,
+      mode: sculptMode, symmetry: sculptSymmetry,
+    })
   }
 
   function commitSculpt() {
@@ -286,15 +290,16 @@ export default function EditorPage() {
             </button>
             {sculptActive && (
               <>
-                <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-                  <button onClick={() => { setSculptMode('push'); viewerRef.current?.setSculptMode({ active: true, mode: 'push' }) }}
-                    style={{ flex: 1, padding: '6px', fontSize: 12, opacity: sculptMode === 'push' ? 1 : 0.5 }}>
-                    Push
-                  </button>
-                  <button onClick={() => { setSculptMode('pull'); viewerRef.current?.setSculptMode({ active: true, mode: 'pull' }) }}
-                    style={{ flex: 1, padding: '6px', fontSize: 12, opacity: sculptMode === 'pull' ? 1 : 0.5 }}>
-                    Pull
-                  </button>
+                <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
+                  {['push', 'pull', 'smooth'].map(m => (
+                    <button key={m}
+                      onClick={() => { setSculptMode(m); viewerRef.current?.setSculptMode({ active: true, mode: m }) }}
+                      style={{ flex: 1, padding: '6px', fontSize: 12,
+                        opacity: sculptMode === m ? 1 : 0.5,
+                        textTransform: 'capitalize' }}>
+                      {m}
+                    </button>
+                  ))}
                 </div>
                 <label style={{ display: 'block', fontSize: 11, opacity: 0.7 }}>Raio: {sculptRadius}mm</label>
                 <input type="range" min="3" max="25" step="1" value={sculptRadius}
@@ -303,7 +308,20 @@ export default function EditorPage() {
                 <label style={{ display: 'block', fontSize: 11, opacity: 0.7 }}>Força: {sculptStrength}</label>
                 <input type="range" min="0.1" max="2" step="0.1" value={sculptStrength}
                   onChange={e => { const s = Number(e.target.value); setSculptStrength(s); viewerRef.current?.setSculptMode({ active: true, strength: s }) }}
-                  style={{ width: '100%' }} />
+                  style={{ width: '100%', marginBottom: 6 }} />
+                <label style={{ display: 'block', fontSize: 11, opacity: 0.7 }}>Simetria</label>
+                <select value={sculptSymmetry}
+                  onChange={e => {
+                    const v = e.target.value
+                    setSculptSymmetry(v)
+                    viewerRef.current?.setSculptMode({ active: true, symmetry: v })
+                  }}
+                  style={{ width: '100%', padding: 4, fontSize: 12 }}>
+                  <option value="none">Sem simetria</option>
+                  <option value="x">Eixo X (esq/dir)</option>
+                  <option value="y">Eixo Y (ant/post)</option>
+                  <option value="z">Eixo Z (sup/inf)</option>
+                </select>
               </>
             )}
           </div>

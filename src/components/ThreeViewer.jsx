@@ -7,7 +7,10 @@ import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js'
 export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptCommit }, ref) {
   const mountRef = useRef(null)
   const stateRef = useRef({})
-  const sculptRef = useRef({ active: false, radius: 8, strength: 0.5, mode: 'push' })
+  const sculptRef = useRef({
+    active: false, radius: 8, strength: 0.5,
+    mode: 'push', symmetry: 'none',
+  })
 
   useImperativeHandle(ref, () => ({
     loadStlBase64(stlB64) {
@@ -38,11 +41,12 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       stateRef.current.activePaintZone = zoneType
     },
 
-    setSculptMode({ active, radius, strength, mode }) {
+    setSculptMode({ active, radius, strength, mode, symmetry }) {
       sculptRef.current.active = !!active
       if (radius != null) sculptRef.current.radius = radius
       if (strength != null) sculptRef.current.strength = strength
       if (mode) sculptRef.current.mode = mode
+      if (symmetry) sculptRef.current.symmetry = symmetry
       const { controls } = stateRef.current
       if (controls) controls.enabled = !active
     },
@@ -180,6 +184,53 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1
     }
 
+    function applyAtPoint(localPoint) {
+      const { mesh } = stateRef.current
+      const geo = mesh.geometry
+      const positions = geo.attributes.position
+      const normals = geo.attributes.normal
+      const { radius, strength, mode } = sculptRef.current
+
+      // Coleta vértices no raio (uma passada)
+      const insideIdx = []
+      let cx = 0, cy = 0, cz = 0
+      for (let i = 0; i < positions.count; i++) {
+        const dx = positions.getX(i) - localPoint.x
+        const dy = positions.getY(i) - localPoint.y
+        const dz = positions.getZ(i) - localPoint.z
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
+        if (d > radius) continue
+        insideIdx.push([i, d])
+        cx += positions.getX(i); cy += positions.getY(i); cz += positions.getZ(i)
+      }
+      if (!insideIdx.length) return
+      cx /= insideIdx.length; cy /= insideIdx.length; cz /= insideIdx.length
+
+      const sign = mode === 'pull' ? -1 : 1
+
+      for (const [i, d] of insideIdx) {
+        const w = (1 - d / radius) ** 2
+        const vx = positions.getX(i)
+        const vy = positions.getY(i)
+        const vz = positions.getZ(i)
+
+        if (mode === 'smooth') {
+          // Move o vértice em direção ao centroide local — relaxa rugosidades
+          positions.setX(i, vx + (cx - vx) * strength * w * 0.5)
+          positions.setY(i, vy + (cy - vy) * strength * w * 0.5)
+          positions.setZ(i, vz + (cz - vz) * strength * w * 0.5)
+        } else {
+          // push / pull: move ao longo da normal local
+          const nx = normals.getX(i)
+          const ny = normals.getY(i)
+          const nz = normals.getZ(i)
+          positions.setX(i, vx + nx * strength * w * sign)
+          positions.setY(i, vy + ny * strength * w * sign)
+          positions.setZ(i, vz + nz * strength * w * sign)
+        }
+      }
+    }
+
     function applySculptStroke(e) {
       const { mesh } = stateRef.current
       if (!mesh) return
@@ -187,35 +238,21 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       raycaster.setFromCamera(pointerNDC, camera)
       const hits = raycaster.intersectObject(mesh)
       if (!hits.length) return
-      const hit = hits[0]
-      const localPoint = mesh.worldToLocal(hit.point.clone())
+      const localPoint = mesh.worldToLocal(hits[0].point.clone())
 
-      const geo = mesh.geometry
-      const positions = geo.attributes.position
-      const normals = geo.attributes.normal
-      const { radius, strength, mode } = sculptRef.current
-      const sign = mode === 'pull' ? -1 : 1
+      applyAtPoint(localPoint)
 
-      for (let i = 0; i < positions.count; i++) {
-        const vx = positions.getX(i)
-        const vy = positions.getY(i)
-        const vz = positions.getZ(i)
-        const dx = vx - localPoint.x
-        const dy = vy - localPoint.y
-        const dz = vz - localPoint.z
-        const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
-        if (d > radius) continue
-        const falloff = 1 - d / radius
-        const w = falloff * falloff
-        const nx = normals.getX(i)
-        const ny = normals.getY(i)
-        const nz = normals.getZ(i)
-        positions.setX(i, vx + nx * strength * w * sign)
-        positions.setY(i, vy + ny * strength * w * sign)
-        positions.setZ(i, vz + nz * strength * w * sign)
+      const sym = sculptRef.current.symmetry
+      if (sym && sym !== 'none') {
+        const mirror = localPoint.clone()
+        if (sym === 'x') mirror.x *= -1
+        if (sym === 'y') mirror.y *= -1
+        if (sym === 'z') mirror.z *= -1
+        applyAtPoint(mirror)
       }
-      positions.needsUpdate = true
-      geo.computeVertexNormals()
+
+      mesh.geometry.attributes.position.needsUpdate = true
+      mesh.geometry.computeVertexNormals()
     }
 
     function onPointerDown(e) {
