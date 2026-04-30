@@ -159,14 +159,107 @@ def _skull_shape(ax, ay, az, subdivisions=4) -> trimesh.Trimesh:
 # Aberturas (A)
 # ---------------------------------------------------------------------------
 
+def _slide_latch_male(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
+                      lug_width=22.0, neck_radius=2.5, head_radius=4.5,
+                      neck_length=4.0, head_length=2.0):
+    """
+    Lingueta com pino tipo cogumelo (eixo radial saindo PRA FORA).
+    Para encaixar no slot keyhole da contra-peça.
+    """
+    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
+    if norm < 0.001:
+        return None
+    ny, nz = y_pos / norm, z_pos / norm
+    angle = np.arctan2(nz, ny)
+    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+
+    # Posição do centro da aba — afastada radialmente
+    cx, cy, cz = 0, y_pos + ny * lug_extension / 2, z_pos + nz * lug_extension / 2
+
+    # Plate (aba retangular). X = espessura split, Y' = radial, Z' = tangencial
+    plate = trimesh.creation.box(extents=(lug_thickness, lug_extension, lug_width))
+    plate.apply_transform(R)
+    plate.apply_translation([cx, cy, cz])
+
+    # Pino cogumelo apontando para -X. Construir com union pra virar
+    # mesh manifold (concatenate cria componentes desconectados).
+    neck = trimesh.creation.cylinder(radius=neck_radius, height=neck_length, sections=16)
+    head = trimesh.creation.cylinder(radius=head_radius, height=head_length, sections=20)
+    head.apply_translation([0, 0, neck_length / 2 + head_length / 2])
+    pin = union([neck, head])
+
+    # Cilindro original em Z; rotaciona pra eixo -X
+    R_pin = trimesh.transformations.rotation_matrix(-np.pi / 2, [0, 1, 0])
+    pin.apply_transform(R_pin)
+    # Posiciona: base do pino dentro da peça frontal (x>0); cabeça atravessa
+    # plano de corte e fica em x negativo (peça traseira)
+    pin.apply_translation([
+        +neck_length / 2 - head_length / 2,
+        cy, cz,
+    ])
+
+    return union([plate, pin])
+
+
+def _slide_latch_female(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
+                        lug_width=22.0, neck_radius=2.5, head_radius=4.5,
+                        slot_length=10.0, clearance=0.3):
+    """
+    Lingueta com slot keyhole rasgado (extremidade larga + extensão estreita).
+    Pino macho da contra-peça entra pela extremidade larga e desliza para a
+    estreita, ficando preso pela cabeça.
+    """
+    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
+    if norm < 0.001:
+        return None
+    ny, nz = y_pos / norm, z_pos / norm
+    angle = np.arctan2(nz, ny)
+    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+
+    cx, cy, cz = 0, y_pos + ny * lug_extension / 2, z_pos + nz * lug_extension / 2
+
+    plate = trimesh.creation.box(extents=(lug_thickness, lug_extension, lug_width))
+    plate.apply_transform(R)
+    plate.apply_translation([cx, cy, cz])
+
+    # Slot keyhole no plate, eixo X (passante)
+    # Extremidade LARGA (radius head + folga) numa ponta do slot
+    big_hole = trimesh.creation.cylinder(
+        radius=head_radius + clearance,
+        height=lug_thickness * 1.5, sections=20,
+    )
+    R_x = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+    big_hole.apply_transform(R_x)
+    # posição: deslocado tangencialmente do centro (no eixo Z' local = lug_width)
+    # Aplicamos a rotação R do plate para alinhar o offset com o eixo Z' tangencial
+    big_offset_local = np.array([0, 0, +slot_length / 2])
+    big_offset = R[:3, :3] @ big_offset_local
+    big_hole.apply_translation([cx, cy + big_offset[1], cz + big_offset[2]])
+
+    # Slot ESTREITO (passa só o pescoço): caixa fina ao longo do eixo Z' do plate
+    narrow = trimesh.creation.box(extents=(
+        lug_thickness * 1.5,                    # X: através
+        (neck_radius + clearance) * 2,          # Y': largura igual ao diâmetro do pescoço
+        slot_length,                            # Z': comprimento ao longo do plate
+    ))
+    narrow.apply_transform(R)
+    narrow.apply_translation([cx, cy, cz])
+
+    # trimesh.boolean.difference só aceita 2 meshes — encadear
+    plate_with_slot = difference([plate, big_hole])
+    plate_with_slot = difference([plate_with_slot, narrow])
+    return plate_with_slot
+
+
 def split_into_two_parts(
     helmet: trimesh.Trimesh,
     outer_dims,
     pin_count: int = 4,
-    pin_radius: float = 2.5,        # parafuso M5
-    lug_extension: float = 12.0,    # quanto a aba sai radialmente
-    lug_thickness: float = 8.0,     # espessura ao longo do eixo X
-    lug_width: float = 16.0,        # largura tangencial da aba
+    use_slide_latch: bool = True,
+    pin_radius: float = 2.5,        # parafuso M5 (modo simples)
+    lug_extension: float = 14.0,
+    lug_thickness: float = 8.0,
+    lug_width: float = 22.0,
 ):
     """
     Divide o capacete em duas peças (frontal e traseira) por um plano
@@ -182,7 +275,6 @@ def split_into_two_parts(
     ax, ay, az = outer_dims
 
     # Posições (y, z) em torno da circunferência do corte
-    # 1 no topo, 2 laterais, 1 base (mesmas posições angulares)
     lug_layout = []
     lug_layout.append((0, +az))            # topo
     lug_layout.append((+ay, 0.0))          # lateral direita
@@ -191,49 +283,60 @@ def split_into_two_parts(
         lug_layout.append((0, -az * 0.55)) # base (próxima à abertura frontal)
     lug_layout = lug_layout[:pin_count]
 
-    # Adiciona os lugs ao capacete inteiro ANTES de cortar — assim eles
-    # se dividem naturalmente pelo plano de corte
-    helmet_with_lugs = helmet
-    for (y_surf, z_surf) in lug_layout:
-        norm = (y_surf ** 2 + z_surf ** 2) ** 0.5
-        if norm < 0.001:
-            continue
-        ny, nz = y_surf / norm, z_surf / norm
-        # centro da aba: deslocado radialmente para fora
-        cy = y_surf + ny * lug_extension / 2
-        cz = z_surf + nz * lug_extension / 2
-
-        # caixa centrada no plano X=0 (será cortada pelo split)
-        # Eixos: X = espessura ao longo do split (lug_thickness)
-        #        Y' = direção radial (lug_extension)
-        #        Z' = tangencial (lug_width)
-        lug = trimesh.creation.box(extents=(lug_thickness, lug_extension, lug_width))
-        # alinha Y' do box com a direção radial (ny, nz) no plano YZ
-        angle = np.arctan2(nz, ny)
-        R_lug = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
-        lug.apply_transform(R_lug)
-        lug.apply_translation([0, cy, cz])
-        helmet_with_lugs = union([helmet_with_lugs, lug])
-
-        # Furo passante eixo X (será cortado pelas duas peças)
-        hole = trimesh.creation.cylinder(
-            radius=pin_radius, height=lug_thickness * 1.4, sections=16,
-        )
-        # cilindro está no eixo Z; rotaciona pra X
-        R_hole = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
-        hole.apply_transform(R_hole)
-        hole.apply_translation([0, cy, cz])
-        helmet_with_lugs = difference([helmet_with_lugs, hole])
-
-    # Caixas que removem a metade contralateral (split coronal)
+    # Caixas removedoras do split coronal
     back_remover = trimesh.creation.box(extents=(ax * 4, ay * 4, az * 4))
     back_remover.apply_translation([-ax * 2 - 0.001, 0, 0])
-
     front_remover = trimesh.creation.box(extents=(ax * 4, ay * 4, az * 4))
     front_remover.apply_translation([ax * 2 + 0.001, 0, 0])
 
-    front_part = difference([helmet_with_lugs, back_remover])
-    back_part = difference([helmet_with_lugs, front_remover])
+    # Split puro primeiro
+    front_part = difference([helmet, back_remover])
+    back_part = difference([helmet, front_remover])
+
+    # Adiciona os fechos a cada metade independentemente
+    for (y_surf, z_surf) in lug_layout:
+        if use_slide_latch:
+            male = _slide_latch_male(
+                y_surf, z_surf,
+                lug_thickness=lug_thickness, lug_extension=lug_extension,
+                lug_width=lug_width,
+            )
+            female = _slide_latch_female(
+                y_surf, z_surf,
+                lug_thickness=lug_thickness, lug_extension=lug_extension,
+                lug_width=lug_width,
+            )
+            if male is None or female is None:
+                continue
+            # Macho na peça frontal, fêmea na traseira
+            front_part = union([front_part, male])
+            back_part = union([back_part, female])
+        else:
+            # Modo legado: lug com furo passante (parafuso M5)
+            norm = (y_surf ** 2 + z_surf ** 2) ** 0.5
+            if norm < 0.001:
+                continue
+            ny, nz = y_surf / norm, z_surf / norm
+            cy = y_surf + ny * lug_extension / 2
+            cz = z_surf + nz * lug_extension / 2
+
+            lug = trimesh.creation.box(extents=(lug_thickness, lug_extension, lug_width))
+            angle = np.arctan2(nz, ny)
+            R_lug = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+            lug.apply_transform(R_lug)
+            lug.apply_translation([0, cy, cz])
+
+            hole = trimesh.creation.cylinder(
+                radius=pin_radius, height=lug_thickness * 1.4, sections=16,
+            )
+            R_hole = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+            hole.apply_transform(R_hole)
+            hole.apply_translation([0, cy, cz])
+            lug_with_hole = difference([lug, hole])
+
+            # mesmo lug nas duas peças (split coronal divide em 2 metades)
+            front_part = union([front_part, lug_with_hole])
+            back_part = union([back_part, lug_with_hole])
 
     return {"front": front_part, "back": back_part, "pins": lug_layout}
 
