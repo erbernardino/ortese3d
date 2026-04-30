@@ -1,65 +1,165 @@
-# OrteseCAD — Resumo da Sessão de Desenvolvimento (2026-04-29)
+# OrteseCAD — Estado Atual
 
-## Visão Geral
+**Última atualização:** 2026-04-30
 
-Sessão completa de desenvolvimento do **OrteseCAD v1.0** — aplicativo desktop Electron + React + Python para design paramétrico de órteses cranianas para assimetria (plagiocefalia).
+Aplicativo desktop Electron + React + Python para design paramétrico de
+órteses cranianas (plagiocefalia posicional). Médicos cadastram e
+medem; ortesistas modelam, validam e exportam para fabricação.
+
+---
 
 ## Stack Tecnológica
 
 | Camada | Tecnologia |
 |--------|-----------|
-| Desktop | Electron 28 |
-| Frontend | React 18 + Vite 5 |
-| 3D Viewer | Three.js (STLLoader + OrbitControls) |
-| Backend local | Python 3.13 + FastAPI |
-| Cloud | Firebase (Auth + Firestore + Storage) |
-| Mesh 3D | trimesh (open3d incompatível com Python 3.13) |
-| PDF | ReportLab |
-| Testes | pytest (30/30 passando, 94% cobertura de serviços) |
+| Desktop | Electron 41 |
+| Frontend | React 19 + Vite 8 |
+| 3D Viewer + Sculpt | Three.js (STLLoader, OrbitControls, Raycaster, STLExporter) |
+| Backend local | Python 3.13 + FastAPI 0.110 |
+| Mesh 3D | trimesh 4.3 + manifold3d (boolean) + rtree (proximity) |
+| Cloud | Firebase (Auth + Firestore + Storage + Functions) |
+| Cache offline | electron-store 8.2 |
+| Reports | ReportLab 4.5 |
+| Testes | pytest (30/30) + vitest+@firebase/rules-unit-testing (17/17) |
 
-## Tarefas Completadas (T1–T18)
+---
 
-| # | Commit | Descrição |
-|---|--------|-----------|
-| T1 | `2cf92ca` | Scaffold Electron + React + Vite |
-| T2 | `eb41ec1` | Python FastAPI server com routers stub |
-| T3 | `1bc6a58` | Bridge Electron-Python via localhost:8765 |
-| T4 | `8eaa20d` | Firebase init (Auth + Firestore + Storage) |
-| T5 | `d890859` | Auth Firebase (login, registro, AuthGuard) |
-| T6 | `a1eb89c` | Cadastro de pacientes com medidas cranianas |
-| T7 | `ebcbed4` | Gestão de casos com colaboração via Firebase |
-| T8 | `1b6fbe0` | Dashboard com lista de casos e estatísticas |
-| T9 | `ca8b803` | Geração paramétrica de malha craniana (elipsoide + offset) |
-| T10 | `7b6d0a9` | Importação e limpeza de scan 3D (trimesh, sem open3d) |
-| T11 | `c6b814f` | Validação de malha (manifold, espessura, volume, peso) |
-| T12 | `b122075` | Visualizador Three.js com geração de modelo paramétrico |
-| T13 | `cedeb58` | Pintura de zonas e histórico undo/redo |
-| T14 | `4080e6c` | Exportação STL e G-code CNC |
-| T15 | `1dae41d` | Geração de relatórios PDF clínico e técnico |
-| T16 | `bf2bb87` | Tela de validação e exportação (STL, G-code, PDF) |
-| T17 | `a61c105` | Notificações Firebase entre médico e ortesista |
-| T18 | `1b96a00` | Suite completa pytest — OrteseCAD v1.0 completo |
+## Funcionalidades
 
-## Decisões Arquiteturais Importantes
+### Auth e colaboração
+- **LoginPage** com 3 modos: login / criar conta / recuperar senha
+  (sendPasswordResetEmail).
+- **Roles**: `doctor` (médico) ou `orthotist` (ortesista).
+- **Cloud Function `resolveUidByEmail`** (Gen2, us-central1) resolve
+  email → UID via Admin SDK; usado em CasePage para atribuir caso.
+- **Notificações** Firestore real-time entre médico ↔ ortesista.
 
-- **trimesh exclusivo** — open3d é incompatível com Python 3.13; toda a malha 3D usa trimesh
-- **localStorage para handoff STL** — a transferência de STL entre EditorPage e ValidationPage usa `localStorage` (chave `stl_${caseId}`) como solução provisória; upload para Firebase Storage ficou como pós-v1.0
-- **AssignToOrthotist por email** — usa e-mail como placeholder de UID; Cloud Function para resolver UID a partir de e-mail necessária em produção
-- **Índice Firestore necessário** — notificações exigem índice composto (`toUserId + read + createdAt`) — criar no Firebase Console antes do deploy em produção
-- **Bundle Three.js** — ~1,15 MB (329 KB gzip); code splitting adiado para pós-v1.0
+### Pacientes e casos
+- Cadastro com 6 medidas cranianas (occipital, frontal, diagA, diagB,
+  CVAI, altura) e dados demográficos.
+- Casos denormalizam `patientName`/`patientDiagnosis`/`patientBirthDate`
+  no doc — ortesistas leem dados do paciente sem getDoc em `patients/`.
+- Status: draft → sent → in_progress → review → approved → exported.
 
-## Métricas Finais
+### Editor 3D
+- **Geração paramétrica**: casca single-manifold via boolean
+  (manifold3d) — outer minus inner ellipsoid.
+- **Furos de ventilação**: 12 cilindros distribuídos por Fibonacci
+  sphere (cobre só hemisfério superior).
+- **Abertura frontal removível**: boolean cut da seção testa+inferior.
+- **Importação de scan 3D** (STL/OBJ/PLY): `scan_processor` faz
+  largest-component + fill_holes + Laplacian smoothing.
+- **Scan → capacete**: `generate_from_scan` desloca vértices ao longo
+  da normal por (offset+wall) e offset; boolean shell preserva a
+  geometria do scan e adiciona ventilação + abertura.
+- **Sculpt push/pull**: brush 3D no ThreeViewer com falloff quadrático
+  (raio 3-25mm, força 0.1-2.0). Vértices indexados por
+  mergeVerticesByPosition para deformação coerente.
+- **IA-MVP de zonas de pressão**: heurística (não ML treinado) baseada
+  em CVAI + diagnóstico textual. Classifica severidade
+  (mild/moderate/severe/very_severe), detecta lado afetado, retorna
+  4 zonas com posições normalizadas, raios, intensidades e
+  justificativas clínicas.
+- **Histórico undo/redo** (50 passos) integrado com sculpt e import.
 
-- **19 commits** no branch `main`
-- **30 testes Python** — todos passando
-- **94% de cobertura** nos serviços Python (61% nos routers)
-- **63 módulos Vite** — build em ~250 ms
-- **Bundle** — 1,15 MB (329 KB gzip)
+### Validação e exportação
+- **Validação**: manifold check + ray casting de espessura (rtree)
+  com **percentil 5** para robustez contra borda de furos.
+- **Volume e peso** real do material da casca (não do crânio inteiro).
+- **Exportação**: STL binário, G-code CNC (380 camadas, 0.2mm),
+  PDF clínico e PDF técnico (ReportLab 4.5, compat Python 3.14).
 
-## Avisos para Produção
+### Persistência e offline
+- **Firebase Storage** para STL: rules cross-service via
+  `firestore.get()` autoriza leitura/escrita só por createdBy ou
+  assignedTo do caso. Requer `roles/datastore.viewer` no
+  Firebase Storage Service Agent.
+- **CORS** do bucket configurado pra `localhost:5173`
+  (atualizar para o domínio de produção quando definir).
+- **Cache offline (electron-store)**: read-through/write-through em
+  `caseService`. Operações offline geram tempIds e entram em fila
+  `pendingOps`.
+- **Sync automático**: ouve evento `online` e replay sequencial via
+  `caseService._replayOp`. Banner amarelo (offline) ou azul
+  (pending) no Dashboard.
 
-1. Criar índice composto no Firestore: `toUserId ASC + read ASC + createdAt DESC`
-2. Implementar Cloud Function para resolver UID a partir de e-mail (AssignToOrthotist)
-3. Migrar handoff de STL do localStorage para Firebase Storage
-4. `reportlab` usa `ast.NameConstant` — remover em Python 3.14
-5. Corrigir dois avisos do `electron-builder`: campo `"description"` ausente no `package.json` e chave `"directories"` obsoleta na raiz
+---
+
+## Segurança
+
+### `firestore.rules`
+- `users/{uid}` — leitura/escrita só pelo próprio.
+- `patients/` — somente createdBy lê (LGPD-strict; ortesistas usam
+  campos denormalizados no caso).
+- `cases/` — leitura/escrita por createdBy ou assignedTo.
+- `notifications/` — leitura/update só pelo destinatário; create
+  exige caseId existente e auth pertencer ao caso (validado via
+  `get(/cases/$(caseId))`).
+- 17 testes vitest contra emulator cobrem todos os casos.
+
+### `storage.rules`
+- `cases/{caseId}/*` cross-service: lê doc Firestore do caso e
+  autoriza só createdBy / assignedTo.
+- IAM: `roles/datastore.viewer` concedido ao Firebase Storage SA.
+
+### Cloud Function `resolveUidByEmail`
+- Exige `req.auth`, valida formato de email, retorna NotFound
+  amigável se não existir.
+
+---
+
+## Limitações conhecidas e pós-v1
+
+- **Region nam5 (US)**: o database Firestore foi criado em
+  `nam5` (multi-region US), divergindo da intenção
+  `southamerica-east1`. Para LGPD com dados de menores, recomendado
+  migrar (cria novo projeto + export/import) ou aceitar formalmente
+  via DPA Google.
+- **Espessura próximo a furos**: ray casting usa percentil 5 para
+  evitar falso positivo nas bordas dos cilindros de ventilação. Se
+  malhas muito complexas exibirem ainda artefatos, usar voxelization
+  + libigl seria mais robusto (não escopado).
+- **CORS Storage** restrito a localhost — atualizar para domínio de
+  produção quando definir.
+- **IA é heurística** (não ML treinado). Para evolução: dataset de
+  scans pré e pós-tratamento + segmentação CNN para sugestões mais
+  específicas por geometria local.
+- **Replay de tempIds em ops dependentes**: se um update offline
+  referencia um case ainda com tempId que vira id real ao reconectar,
+  o replay marca a op como falha. Fix futuro: mapear tempId→realId
+  e retraduzir ops pendentes antes do replay.
+- **Conta de teste** `teste-debug@allogic.com.br` ainda no Auth
+  (criada para diagnóstico inicial; pode ser deletada).
+- **Deploy production**: pendente — falta config de production Firebase,
+  build do Electron empacotado, certificados Apple/Windows.
+
+---
+
+## Comandos úteis
+
+```bash
+# Dev (Electron + Vite + Python)
+npm run dev
+
+# Apenas Vite (browser)
+npm run dev:renderer
+
+# Python standalone
+.venv/bin/python -m uvicorn python.main:app --host 127.0.0.1 --port 8765
+
+# Tests
+.venv/bin/python -m pytest tests/python/ -q              # 30 Python
+firebase emulators:exec --only firestore --project demo-ortese3d \
+  "npx vitest run tests/rules.test.mjs"                  # 17 rules
+
+# Deploy Firebase
+firebase deploy --only firestore:rules
+firebase deploy --only firestore:indexes
+firebase deploy --only storage
+firebase deploy --only functions
+
+# Build distribuíveis
+npm run build
+```
+
+Veja `docs/DEPLOY.md` para o setup completo de um novo projeto.
