@@ -92,7 +92,33 @@ def generate_from_measurements(m: dict) -> trimesh.Trimesh:
                 except ValueError:
                     pass
 
+    # Pós-processamento: suavização leve de Taubin para arredondar
+    # todas as arestas remanescentes — juncão chamfer↔casca,
+    # bordas horizontais dos plates, junção pescoço↔cabeça do pino
+    # cogumelo. Filtro Taubin (lamb positivo, nu negativo) preserva
+    # volume melhor que Laplaciano puro — capacete não encolhe.
+    # iterations=2 dá fillets visualmente suaves sem perder precisão.
+    helmet = _smooth_final(helmet)
+
     return helmet
+
+
+def _smooth_final(mesh: trimesh.Trimesh, iterations: int = 2) -> trimesh.Trimesh:
+    """
+    Aplica Taubin smoothing preservando watertight + volume aproximado.
+    Tolerante a falhas: se o filtro quebrar (mesh degenerada), retorna
+    o original sem smoothing.
+    """
+    try:
+        smoothed = mesh.copy()
+        trimesh.smoothing.filter_taubin(
+            smoothed, lamb=0.5, nu=-0.53, iterations=iterations,
+        )
+        if smoothed.is_watertight and smoothed.is_volume:
+            return smoothed
+    except Exception:
+        pass
+    return mesh
 
 
 def generate_from_scan(
