@@ -41,13 +41,14 @@ def validate_mesh(
                 if len(ds):
                     local_min.append(float(ds.min()))
             if local_min:
-                # 5º percentil — robusto contra artefatos em bordas de furos
-                # de ventilação. O mínimo absoluto pode ser falso positivo.
+                # 10º percentil — robusto contra artefatos em bordas de
+                # furos de ventilação, chanfro inferior e cortes laterais
+                # (orelhas). p5 é muito sensível a malha não-convexa.
                 arr = np.array(local_min)
-                min_thickness_found = float(np.percentile(arr, 5))
+                min_thickness_found = float(np.percentile(arr, 10))
                 if min_thickness_found < min_thickness_mm:
                     errors.append(
-                        f"Espessura medida (p5) {min_thickness_found:.2f}mm abaixo do limite {min_thickness_mm}mm."
+                        f"Espessura medida (p10) {min_thickness_found:.2f}mm abaixo do limite {min_thickness_mm}mm."
                     )
         except Exception as e:
             warnings.append(f"Não foi possível verificar espessura mínima: {e}")
