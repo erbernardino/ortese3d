@@ -22,6 +22,15 @@ export const storageService = {
     return path
   },
 
+  async uploadEvaluationPhoto(caseId, evalId, file, idx) {
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase()
+    const path = `cases/${caseId}/evaluations/${evalId}/photo-${idx}.${ext}`
+    const r = ref(storage, path)
+    await uploadBytes(r, file, { contentType: file.type || 'image/jpeg' })
+    const url = await getDownloadURL(r)
+    return { path, url }
+  },
+
   async downloadStlAsBase64(path) {
     const r = ref(storage, path)
     const buf = await getBytes(r)

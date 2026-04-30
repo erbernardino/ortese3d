@@ -1,14 +1,25 @@
 import io
+import urllib.request
 from datetime import date as _date, datetime
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak,
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image,
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.graphics.shapes import Drawing, Line, Rect, Circle, String, Polygon
 from reportlab.lib.enums import TA_LEFT
+
+
+def _fetch_image(url, timeout=10):
+    """Baixa uma imagem para BytesIO. Retorna None em falha (silencioso)."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "OrteseCAD-PDF"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return io.BytesIO(resp.read())
+    except Exception:
+        return None
 
 
 PRIMARY = colors.HexColor("#2d3748")
@@ -253,6 +264,57 @@ def _evaluations_table(evaluations):
     return t
 
 
+def _photos_block(evaluations, max_photos=4):
+    """
+    Embed das fotos da última avaliação que tem fotos. Limite total
+    para não inflar o PDF. Tolerante: ignora fotos que não baixarem.
+    """
+    s = _styles()
+    last_with_photos = None
+    for e in reversed(evaluations or []):
+        if e.get("photos"):
+            last_with_photos = e
+            break
+    if not last_with_photos:
+        return None
+
+    photos = last_with_photos["photos"][:max_photos]
+    cells = []
+    for p in photos:
+        url = p.get("url") if isinstance(p, dict) else None
+        if not url:
+            continue
+        buf = _fetch_image(url)
+        if not buf:
+            continue
+        try:
+            img = Image(buf, width=40 * mm, height=40 * mm, kind="proportional")
+            cells.append(img)
+        except Exception:
+            continue
+
+    if not cells:
+        return None
+
+    out = [
+        Paragraph(f"Fotografias · {last_with_photos.get('date', '')}", s["Section"]),
+    ]
+    # Layout em grid 2x2 ou linha única
+    if len(cells) <= 2:
+        rows = [cells]
+    else:
+        rows = [cells[:2], cells[2:]]
+    t = Table(rows, hAlign="LEFT")
+    t.setStyle(TableStyle([
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    out.append(t)
+    return out
+
+
 def _ai_zones_block(suggestion):
     if not suggestion:
         return None
@@ -308,6 +370,10 @@ def generate_clinical_pdf(patient, measurements, model_meta,
         body.append(_cvai_chart(evaluations))
         body.append(Spacer(1, 2 * mm))
         body.append(_evaluations_table(evaluations))
+
+        photo_block = _photos_block(evaluations)
+        if photo_block:
+            body.extend(photo_block)
 
     ai = _ai_zones_block(suggestion)
     if ai:

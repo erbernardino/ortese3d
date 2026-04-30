@@ -66,6 +66,7 @@ export default function EvolutionPage() {
         <>
           <CvaiChart series={series} />
           <EvolutionTable series={series} />
+          <PhotoGallery series={series} />
         </>
       )}
     </div>
@@ -80,6 +81,7 @@ function NewEvaluationForm({ caseId, uid, onSaved }) {
     diagA: '', diagB: '', cvai: '', height: '',
     notes: '',
   })
+  const [photos, setPhotos] = useState([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -98,7 +100,7 @@ function NewEvaluationForm({ caseId, uid, onSaved }) {
     setError('')
     try {
       const cvai = form.cvai || computedCvai
-      await evaluationService.create(caseId, { ...form, cvai }, uid)
+      await evaluationService.create(caseId, { ...form, cvai }, uid, photos)
       onSaved()
     } catch (err) {
       setError(err.message)
@@ -131,6 +133,22 @@ function NewEvaluationForm({ caseId, uid, onSaved }) {
           <textarea rows="2" value={form.notes} onChange={e => set('notes', e.target.value)}
             style={{ width: '100%', padding: 8 }} />
         </Field>
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <Field label={`Fotos${photos.length ? ` · ${photos.length} selecionada(s)` : ''}`}>
+          <input type="file" accept="image/*" multiple
+            onChange={e => setPhotos(Array.from(e.target.files || []))} />
+        </Field>
+        {photos.length > 0 && (
+          <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            {photos.map((p, i) => (
+              <div key={i} style={{ fontSize: 11, color: '#666',
+                padding: '4px 8px', background: '#edf2f7', borderRadius: 4 }}>
+                {p.name} ({Math.round(p.size / 1024)} KB)
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       {error && <p style={{ color: '#e53e3e' }}>{error}</p>}
       <div style={{ marginTop: 12, textAlign: 'right' }}>
@@ -198,6 +216,30 @@ function Th({ children }) {
 }
 function Td({ children, style }) {
   return <td style={{ padding: '8px 12px', fontSize: 14, ...style }}>{children}</td>
+}
+
+function PhotoGallery({ series }) {
+  const allPhotos = series.flatMap(e =>
+    (e.photos || []).map(p => ({ ...p, date: e.date }))
+  )
+  if (!allPhotos.length) return null
+  return (
+    <div style={{ marginTop: 32 }}>
+      <h3 style={{ fontSize: 14, marginBottom: 12 }}>Galeria de Fotos</h3>
+      <div style={{ display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12 }}>
+        {allPhotos.map((p, i) => (
+          <a key={i} href={p.url} target="_blank" rel="noopener noreferrer"
+            style={{ display: 'block', textDecoration: 'none', color: 'inherit' }}>
+            <img src={p.url} alt=""
+              style={{ width: '100%', height: 110, objectFit: 'cover',
+                borderRadius: 6, border: '1px solid #e2e8f0' }} />
+            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>{p.date}</div>
+          </a>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function CvaiChart({ series }) {

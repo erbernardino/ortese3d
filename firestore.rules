@@ -67,7 +67,10 @@ service cloud.firestore {
           caseRefBy(caseId).data.createdBy == request.auth.uid ||
           caseRefBy(caseId).data.assignedTo == request.auth.uid
         );
-        allow update, delete: if false;
+        // update permitido só para o autor (anexar fotos após o create)
+        allow update: if isSignedIn()
+                      && resource.data.createdBy == request.auth.uid;
+        allow delete: if false;
       }
     }
 
