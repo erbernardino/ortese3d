@@ -5,13 +5,16 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js'
 import { ViewHelper } from 'three/examples/jsm/helpers/ViewHelper.js'
 
-export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptCommit }, ref) {
+export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptCommit, onAnnotationCreate }, ref) {
   const mountRef = useRef(null)
   const stateRef = useRef({})
   const sculptRef = useRef({
     active: false, radius: 8, strength: 0.5,
     mode: 'push', symmetry: 'none',
   })
+  const annotateRef = useRef({ active: false })
+  const onAnnotationCreateRef = useRef(onAnnotationCreate)
+  onAnnotationCreateRef.current = onAnnotationCreate
 
   useImperativeHandle(ref, () => ({
     loadStlBase64(stlB64) {
@@ -96,6 +99,82 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       geo.computeVertexNormals()
     },
 
+    setAnnotateMode(active) {
+      annotateRef.current.active = !!active
+      const { controls } = stateRef.current
+      // não desabilita orbit; click curto só anota se modo ativo
+      controls.enabled = true
+    },
+
+    setAnnotations(annotations) {
+      const { scene, mesh, annotationGroup } = stateRef.current
+      if (annotationGroup) {
+        scene.remove(annotationGroup)
+        annotationGroup.traverse(o => {
+          if (o.geometry) o.geometry.dispose()
+          if (o.material) {
+            if (o.material.map) o.material.map.dispose()
+            o.material.dispose()
+          }
+        })
+      }
+      if (!annotations?.length || !mesh) {
+        stateRef.current.annotationGroup = null
+        return
+      }
+
+      const group = new THREE.Group()
+      const bbox = new THREE.Box3().setFromObject(mesh)
+      const size = new THREE.Vector3()
+      bbox.getSize(size)
+      const offset = Math.max(size.x, size.y, size.z) * 0.18
+
+      for (const a of annotations) {
+        const p = new THREE.Vector3(a.position.x, a.position.y, a.position.z)
+        const tip = p.clone()
+        // Direção de afastamento — radial saindo da origem do mesh
+        const dir = p.clone().normalize()
+        const labelPos = p.clone().add(dir.multiplyScalar(offset))
+
+        // ponto vermelho na superfície
+        const dot = new THREE.Mesh(
+          new THREE.SphereGeometry(Math.max(size.x, size.y) * 0.012, 12, 8),
+          new THREE.MeshBasicMaterial({ color: 0xfbbf24 }),
+        )
+        dot.position.copy(tip)
+        group.add(dot)
+
+        // linha conectando ponto e label
+        const line = new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints([tip, labelPos]),
+          new THREE.LineBasicMaterial({ color: 0xfbbf24 }),
+        )
+        group.add(line)
+
+        // sprite com o texto
+        const c = document.createElement('canvas')
+        const txt = a.text || ''
+        c.width = 512; c.height = 96
+        const ctx = c.getContext('2d')
+        ctx.fillStyle = 'rgba(45,55,72,0.92)'
+        _roundRect(ctx, 4, 4, 504, 88, 14); ctx.fill()
+        ctx.font = 'bold 36px sans-serif'
+        ctx.fillStyle = '#fbbf24'
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
+        ctx.fillText(txt.slice(0, 32), 256, 48)
+        const tex = new THREE.CanvasTexture(c)
+        const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false })
+        const sprite = new THREE.Sprite(spriteMat)
+        const scale = Math.max(size.x, size.y) * 0.3
+        sprite.scale.set(scale, scale * 0.18, 1)
+        sprite.position.copy(labelPos)
+        sprite.renderOrder = 999
+        group.add(sprite)
+      }
+      scene.add(group)
+      stateRef.current.annotationGroup = group
+    },
+
     setAsymmetryHint(side) {
       const { scene, mesh, asymmetryGroup } = stateRef.current
       if (asymmetryGroup) {
@@ -123,13 +202,13 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
         center.y + ySign * 0.7 * half.y,
         center.z + 0.3 * half.z,
       )
-      const radius = Math.max(half.x, half.y) * 0.22
+      const radius = Math.max(half.x, half.y) * 0.32
 
       const group = new THREE.Group()
       const sphereGeo = new THREE.SphereGeometry(radius, 24, 18)
       const mat = new THREE.MeshStandardMaterial({
-        color: 0xfc8181, transparent: true, opacity: 0.45,
-        emissive: 0xfc8181, emissiveIntensity: 0.4,
+        color: 0xfc8181, transparent: true, opacity: 0.40,
+        emissive: 0xfc8181, emissiveIntensity: 0.55,
       })
       const m = new THREE.Mesh(sphereGeo, mat)
       m.position.copy(pos)
@@ -137,19 +216,21 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
 
       // Sprite com label "Lado plano"
       const c = document.createElement('canvas')
-      c.width = 256; c.height = 64
+      c.width = 512; c.height = 128
       const ctx = c.getContext('2d')
-      ctx.fillStyle = 'rgba(252,129,129,0.9)'
-      ctx.fillRect(0, 0, 256, 64)
-      ctx.font = 'bold 28px sans-serif'
+      ctx.fillStyle = 'rgba(252,129,129,0.95)'
+      _roundRect(ctx, 6, 6, 500, 116, 18)
+      ctx.fill()
+      ctx.font = 'bold 56px sans-serif'
       ctx.fillStyle = 'white'
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
-      ctx.fillText('🚩 Lado plano', 128, 32)
+      ctx.fillText('🚩 Lado plano', 256, 64)
       const tex = new THREE.CanvasTexture(c)
-      const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true })
+      const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false })
       const sprite = new THREE.Sprite(spriteMat)
-      sprite.scale.set(40, 10, 1)
-      sprite.position.copy(pos).add(new THREE.Vector3(0, 0, radius * 1.3))
+      sprite.scale.set(radius * 4, radius * 1, 1)
+      sprite.position.copy(pos).add(new THREE.Vector3(0, 0, radius * 1.6))
+      sprite.renderOrder = 999
       group.add(sprite)
 
       scene.add(group)
@@ -430,6 +511,19 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
     }
 
     function onPointerDown(e) {
+      // Modo anotação tem prioridade
+      if (annotateRef.current.active) {
+        const { mesh } = stateRef.current
+        if (!mesh) return
+        getCanvasPointer(e)
+        raycaster.setFromCamera(pointerNDC, camera)
+        const hits = raycaster.intersectObject(mesh)
+        if (hits.length) {
+          const local = mesh.worldToLocal(hits[0].point.clone())
+          onAnnotationCreateRef.current?.({ x: local.x, y: local.y, z: local.z })
+        }
+        return
+      }
       if (!sculptRef.current.active) return
       pointerDown = true
       if (sculptRef.current.mode === 'grab') {
@@ -495,6 +589,20 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
 
   return <div ref={mountRef} style={{ width: '100%', height: '100%', ...style }} />
 })
+
+function _roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath()
+  ctx.moveTo(x + r, y)
+  ctx.lineTo(x + w - r, y)
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r)
+  ctx.lineTo(x + w, y + h - r)
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h)
+  ctx.lineTo(x + r, y + h)
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r)
+  ctx.lineTo(x, y + r)
+  ctx.quadraticCurveTo(x, y, x + r, y)
+  ctx.closePath()
+}
 
 // Mescla vértices duplicados por posição (STLs não-indexados → indexed) — necessário
 // para que o sculpt afete vizinhos em vez de mover só uma face isolada.

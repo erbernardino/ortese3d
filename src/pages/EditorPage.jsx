@@ -26,6 +26,7 @@ export default function EditorPage() {
   const [isScanRaw, setIsScanRaw] = useState(false)
   const [suggesting, setSuggesting] = useState(false)
   const [suggestion, setSuggestion] = useState(null)
+  const [annotateActive, setAnnotateActive] = useState(false)
   const fileInputRef = useRef(null)
   const [sculptActive, setSculptActive] = useState(false)
   const [sculptRadius, setSculptRadius] = useState(8)
@@ -40,6 +41,27 @@ export default function EditorPage() {
       active: next, radius: sculptRadius, strength: sculptStrength,
       mode: sculptMode, symmetry: sculptSymmetry,
     })
+  }
+
+  // sincroniza anotações do caso com o viewer
+  useEffect(() => {
+    viewerRef.current?.setAnnotations(caseData?.annotations ?? [])
+  }, [caseData?.annotations, currentStl])
+
+  function toggleAnnotate() {
+    const next = !annotateActive
+    setAnnotateActive(next)
+    viewerRef.current?.setAnnotateMode(next)
+  }
+
+  async function handleAnnotationCreate(position) {
+    const text = window.prompt('Anotação clínica:')
+    if (!text) return
+    const next = [...(caseData?.annotations ?? []), {
+      position, text, createdAt: new Date().toISOString(),
+    }]
+    await caseService.update(caseId, { annotations: next })
+    viewerRef.current?.setAnnotations(next)
   }
 
   function commitSculpt() {
@@ -188,8 +210,19 @@ export default function EditorPage() {
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', height: '100vh' }}>
       <div style={{ position: 'relative' }}>
-        <ThreeViewer ref={viewerRef} onSculptCommit={commitSculpt} />
+        <ThreeViewer
+          ref={viewerRef}
+          onSculptCommit={commitSculpt}
+          onAnnotationCreate={handleAnnotationCreate}
+        />
         <ViewControls onView={p => viewerRef.current?.setView(p)} />
+        {annotateActive && (
+          <div style={{
+            position: 'absolute', top: 12, right: 12,
+            background: 'rgba(252,191,36,0.95)', color: '#1a202c',
+            padding: '6px 12px', borderRadius: 6, fontSize: 13, fontWeight: 600,
+          }}>📝 Modo anotação — clique no modelo</div>
+        )}
       </div>
 
       <div style={{ padding: 16, borderLeft: '1px solid #333', overflowY: 'auto', background: '#0f0f1a', color: '#e2e8f0' }}>
@@ -262,6 +295,15 @@ export default function EditorPage() {
               cursor: suggesting ? 'wait' : 'pointer' }}>
             {suggesting ? 'Analisando...' : '🧠 Sugerir Zonas (IA)'}
           </button>
+          <button onClick={toggleAnnotate} disabled={!currentStl}
+            style={{ marginTop: 8, width: '100%', padding: '8px',
+              background: annotateActive ? '#fbbf24' : 'rgba(255,255,255,0.06)',
+              color: annotateActive ? '#1a202c' : '#cbd5e0',
+              border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6,
+              cursor: currentStl ? 'pointer' : 'not-allowed', fontSize: 12 }}>
+            {annotateActive ? '📝 Modo anotação ativo (sair)' : '📝 Adicionar anotação'}
+          </button>
+
           {suggestion && (
             <ZoneSuggestion
               s={suggestion}
