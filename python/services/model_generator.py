@@ -198,18 +198,48 @@ def split_into_two_parts(
         pin_layout.append((0, -az * 0.50))   # base central (frente da abertura)
     pin_layout = pin_layout[:pin_count]
 
+    # Boss = cilindro mais largo que engrossa a parede ao redor de cada
+    # pino/furo. Aumenta resistência mecânica (FDM tem fraqueza nas
+    # camadas, então pinos retos sob tensão lateral podem quebrar).
+    boss_radius = pin_radius * 2.2
+    boss_length = pin_length * 0.9    # menor que o pino: pino ainda
+                                      # protrude além do boss
+
     R_x = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
     for (y, z) in pin_layout:
-        # Pino macho sólido, eixo X
-        pin = trimesh.creation.cylinder(radius=pin_radius, height=pin_length, sections=16)
+        # Boss frontal: cilindro saliente que une com a peça frontal
+        # (protrudindo do plano de corte para o +x, dentro da peça)
+        front_boss = trimesh.creation.cylinder(
+            radius=boss_radius, height=boss_length, sections=20,
+        )
+        front_boss.apply_transform(R_x)
+        # centro deslocado pra dentro da peça frontal (x positivo)
+        front_boss.apply_translation([+boss_length * 0.5, y, z])
+        front_part = union([front_part, front_boss])
+
+        # Pino macho sólido, eixo X — passa pelo boss frontal e atravessa
+        # o plano de corte
+        pin = trimesh.creation.cylinder(
+            radius=pin_radius, height=pin_length, sections=16,
+        )
         pin.apply_transform(R_x)
         pin.apply_translation([0, y, z])
         front_part = union([front_part, pin])
 
-        # Furo correspondente com folga
+        # Boss traseiro: engrossa a parede da peça traseira ao redor
+        # do furo (protrudindo do plano de corte para -x, dentro da
+        # peça traseira)
+        back_boss = trimesh.creation.cylinder(
+            radius=boss_radius, height=boss_length, sections=20,
+        )
+        back_boss.apply_transform(R_x)
+        back_boss.apply_translation([-boss_length * 0.5, y, z])
+        back_part = union([back_part, back_boss])
+
+        # Furo passante com folga, atravessa boss + parede
         hole = trimesh.creation.cylinder(
             radius=pin_radius + pin_clearance,
-            height=pin_length * 1.4,
+            height=pin_length * 1.6,
             sections=16,
         )
         hole.apply_transform(R_x)
