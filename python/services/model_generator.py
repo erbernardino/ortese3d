@@ -432,7 +432,26 @@ def _vent_cylinders(outer_dims, n_holes, radius):
         direction = np.array([x, y, z])
         direction = direction / np.linalg.norm(direction)
 
-        cyl = trimesh.creation.cylinder(radius=radius, height=max_r, sections=16)
+        # Slot oval (capsule) orientado tangencialmente — padrão Sprout3D.
+        # Comprimento do slot = 2.5x raio para ficar oval visível.
+        slot_length = radius * 2.5
+        cap = trimesh.creation.capsule(
+            radius=radius, height=slot_length, count=[10, 10],
+        )
+        # Capsule está alinhada em Z (eixo); precisamos rotacionar para que:
+        # - o eixo "comprido" do slot fique tangencial à superfície do crânio
+        # - o eixo "fino" (raio) seja radial (perfurando a casca)
+        # Solução: girar 90° em torno do eixo X→ alinha capsule com Y → fica
+        # tangencial. Depois penetra pela casca via offset de altura ~max_r.
+        R_horiz = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
+        cap.apply_transform(R_horiz)
+        # Agora capsule comprido em Y. Estende profundidade fazendo height
+        # virtual via "espera" — para perfurar a casca, recorremos a um cilindro
+        # de penetração separado unido ao slot
+        bore = trimesh.creation.cylinder(radius=radius, height=max_r, sections=16)
+        slot_cutter = union([cap, bore])
+
+        # Alinhar o eixo de penetração (Z do bore) com a normal radial
         z_axis = np.array([0, 0, 1])
         if not np.allclose(direction, z_axis):
             rot_axis = np.cross(z_axis, direction)
@@ -440,9 +459,9 @@ def _vent_cylinders(outer_dims, n_holes, radius):
             if rot_norm > 1e-9:
                 angle = np.arccos(np.clip(np.dot(z_axis, direction), -1, 1))
                 R = trimesh.transformations.rotation_matrix(angle, rot_axis / rot_norm)
-                cyl.apply_transform(R)
-        cyl.apply_translation(center)
-        cylinders.append(cyl)
+                slot_cutter.apply_transform(R)
+        slot_cutter.apply_translation(center)
+        cylinders.append(slot_cutter)
 
         if len(cylinders) >= n_holes:
             break
