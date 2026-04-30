@@ -3,7 +3,9 @@ node_modules/
 dist/
 .DS_Store
 node_modules
+.venv/
 python/.venv/
+functions/node_modules/
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -11,3 +13,7 @@ __pycache__/
 .agents/
 .claude/
 .junie/
+.playwright-mcp/
+firestore-debug.log
+firebase-debug.log
+*.log
