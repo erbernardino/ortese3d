@@ -99,6 +99,33 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       geo.computeVertexNormals()
     },
 
+    setOverlayStl(stlB64) {
+      const { scene, overlayMesh } = stateRef.current
+      if (overlayMesh) {
+        scene.remove(overlayMesh)
+        overlayMesh.geometry?.dispose()
+        overlayMesh.material?.dispose()
+      }
+      if (!stlB64) {
+        stateRef.current.overlayMesh = null
+        return
+      }
+      const raw = atob(stlB64)
+      const buf = new Uint8Array(raw.length)
+      for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i)
+      const geo = new STLLoader().parse(buf.buffer)
+      geo.computeVertexNormals()
+      const mat = new THREE.MeshStandardMaterial({
+        color: 0xfbbf24, transparent: true, opacity: 0.35,
+        depthWrite: false, side: THREE.DoubleSide,
+      })
+      const m = new THREE.Mesh(geo, mat)
+      m.geometry.center()
+      m.renderOrder = 1
+      scene.add(m)
+      stateRef.current.overlayMesh = m
+    },
+
     setAnnotateMode(active) {
       annotateRef.current.active = !!active
       const { controls } = stateRef.current

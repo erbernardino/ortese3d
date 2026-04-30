@@ -27,6 +27,8 @@ export default function EditorPage() {
   const [suggesting, setSuggesting] = useState(false)
   const [suggestion, setSuggestion] = useState(null)
   const [annotateActive, setAnnotateActive] = useState(false)
+  const [scanStl, setScanStl] = useState(null)
+  const [showScanOverlay, setShowScanOverlay] = useState(false)
   const fileInputRef = useRef(null)
   const [sculptActive, setSculptActive] = useState(false)
   const [sculptRadius, setSculptRadius] = useState(8)
@@ -52,6 +54,12 @@ export default function EditorPage() {
     const next = !annotateActive
     setAnnotateActive(next)
     viewerRef.current?.setAnnotateMode(next)
+  }
+
+  function toggleScanOverlay() {
+    const next = !showScanOverlay
+    setShowScanOverlay(next)
+    viewerRef.current?.setOverlayStl(next ? scanStl : null)
   }
 
   async function handleAnnotationCreate(position) {
@@ -101,6 +109,7 @@ export default function EditorPage() {
         volume_cm3: 0,
       })
       setIsScanRaw(true)
+      setScanStl(result.stl_b64)        // memoriza para overlay futuro
       analyticsService.track('scan_imported', {
         vertex_count: result.vertex_count,
         file_size_kb: Math.round(file.size / 1024),
@@ -302,6 +311,17 @@ export default function EditorPage() {
               cursor: suggesting ? 'wait' : 'pointer' }}>
             {suggesting ? 'Analisando...' : '🧠 Sugerir Zonas (IA)'}
           </button>
+          {scanStl && (
+            <button onClick={toggleScanOverlay} disabled={!currentStl}
+              style={{ marginTop: 8, width: '100%', padding: '8px',
+                background: showScanOverlay ? '#fbbf24' : 'rgba(255,255,255,0.06)',
+                color: showScanOverlay ? '#1a202c' : '#cbd5e0',
+                border: '1px solid rgba(255,255,255,0.08)', borderRadius: 6,
+                cursor: currentStl ? 'pointer' : 'not-allowed', fontSize: 12 }}>
+              {showScanOverlay ? '👁 Ocultar scan original' : '👁 Mostrar scan original'}
+            </button>
+          )}
+
           <button onClick={toggleAnnotate} disabled={!currentStl}
             style={{ marginTop: 8, width: '100%', padding: '8px',
               background: annotateActive ? '#fbbf24' : 'rgba(255,255,255,0.06)',
