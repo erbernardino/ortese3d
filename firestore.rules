@@ -43,6 +43,19 @@ service cloud.firestore {
         resource.data.assignedTo == request.auth.uid
       );
       allow delete: if false;
+
+      // Avaliações de evolução do paciente — mesmas regras do caso
+      match /evaluations/{evalId} {
+        allow read: if isSignedIn() && (
+          caseRefBy(caseId).data.createdBy == request.auth.uid ||
+          caseRefBy(caseId).data.assignedTo == request.auth.uid
+        );
+        allow create: if isSignedIn() && (
+          caseRefBy(caseId).data.createdBy == request.auth.uid ||
+          caseRefBy(caseId).data.assignedTo == request.auth.uid
+        );
+        allow update, delete: if false;
+      }
     }
 
     // Notificações:

@@ -73,6 +73,14 @@ export default function CasePage() {
           </button>
         </div>
       )}
+
+      <div style={{ marginTop: 24 }}>
+        <button onClick={() => navigate(`/evolution/${currentCaseId}`)}
+          style={{ background: '#9f7aea', color: 'white', border: 'none',
+            borderRadius: 6, padding: '8px 16px' }}>
+          📊 Acompanhamento de Evolução
+        </button>
+      </div>
     </div>
   )
 }
