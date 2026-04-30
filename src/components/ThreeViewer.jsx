@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js'
+import { ViewHelper } from 'three/examples/jsm/helpers/ViewHelper.js'
 
 export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptCommit }, ref) {
   const mountRef = useRef(null)
@@ -185,6 +186,7 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
     const renderer = new THREE.WebGLRenderer({ antialias: true })
     renderer.setSize(w, h)
     renderer.setPixelRatio(window.devicePixelRatio)
+    renderer.autoClear = false               // necessário pra ViewHelper
     mount.appendChild(renderer.domElement)
 
     const scene = new THREE.Scene()
@@ -201,6 +203,19 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
 
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
+
+    // Gizmo de eixos no canto inferior direito (clicável)
+    const viewHelper = new ViewHelper(camera, renderer.domElement)
+    viewHelper.controls = controls
+    viewHelper.controls.center = controls.target
+    const helperContainer = document.createElement('div')
+    Object.assign(helperContainer.style, {
+      position: 'absolute', right: '8px', bottom: '8px',
+      width: '128px', height: '128px', pointerEvents: 'auto',
+    })
+    mount.appendChild(helperContainer)
+    helperContainer.addEventListener('pointerup', e => viewHelper.handleClick(e))
+    const clock = new THREE.Clock()
 
     const raycaster = new THREE.Raycaster()
     const pointerNDC = new THREE.Vector2()
@@ -388,8 +403,12 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
     let animId
     function animate() {
       animId = requestAnimationFrame(animate)
+      const dt = clock.getDelta()
+      if (viewHelper.animating) viewHelper.update(dt)
       controls.update()
+      renderer.clear()
       renderer.render(scene, camera)
+      viewHelper.render(renderer)
     }
     animate()
 
