@@ -224,10 +224,20 @@ export default function EditorPage() {
             {suggesting ? 'Analisando...' : '🧠 Sugerir Zonas (IA)'}
           </button>
           {suggestion && (
-            <ZoneSuggestion s={suggestion} onClose={() => {
-              setSuggestion(null)
-              viewerRef.current?.setSuggestionZones(null)
-            }} />
+            <ZoneSuggestion
+              s={suggestion}
+              onApply={() => {
+                viewerRef.current?.applySuggestedZones(suggestion.zones)
+                viewerRef.current?.setSuggestionZones(null)
+                const stl = viewerRef.current?.exportStlBase64()
+                if (stl) push(stl)
+                setSuggestion(null)
+              }}
+              onClose={() => {
+                setSuggestion(null)
+                viewerRef.current?.setSuggestionZones(null)
+              }}
+            />
           )}
         </div>
 
@@ -292,7 +302,7 @@ export default function EditorPage() {
   )
 }
 
-function ZoneSuggestion({ s, onClose }) {
+function ZoneSuggestion({ s, onClose, onApply }) {
   const SEV_COLOR = { mild: '#48c78e', moderate: '#ecc94b', severe: '#fc8181', very_severe: '#e53e3e' }
   const TYPE_COLOR = { pressure: '#fc8181', relief: '#63b3ed', neutral: '#a0aec0' }
   return (
@@ -324,6 +334,14 @@ function ZoneSuggestion({ s, onClose }) {
           </div>
         ))}
       </div>
+      <button onClick={onApply}
+        style={{
+          marginTop: 10, width: '100%', padding: '8px',
+          background: '#9f7aea', color: 'white', border: 'none',
+          borderRadius: 6, cursor: 'pointer', fontWeight: 600,
+        }}>
+        ✨ Aplicar Zonas no Capacete
+      </button>
     </div>
   )
 }

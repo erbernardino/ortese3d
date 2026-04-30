@@ -47,6 +47,50 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       if (controls) controls.enabled = !active
     },
 
+    applySuggestedZones(zones, { maxDisplacementMm = 6.0 } = {}) {
+      const { mesh } = stateRef.current
+      if (!mesh || !zones?.length) return
+
+      const geo = mesh.geometry
+      const positions = geo.attributes.position
+      const normals = geo.attributes.normal
+
+      const bbox = new THREE.Box3().setFromObject(mesh)
+      const size = new THREE.Vector3()
+      bbox.getSize(size)
+      const half = size.clone().multiplyScalar(0.5)
+      const center = new THREE.Vector3()
+      bbox.getCenter(center)
+
+      for (const z of zones) {
+        if (z.type === 'neutral') continue
+        const sign = z.type === 'pressure' ? -1 : +1
+        // converte posição normalizada para coords locais do mesh
+        const target = new THREE.Vector3(
+          z.position.x * half.x,
+          z.position.y * half.y,
+          z.position.z * half.z,
+        )
+        const r = z.radius_mm
+        const intensity = (z.intensity ?? 1) * maxDisplacementMm
+
+        for (let i = 0; i < positions.count; i++) {
+          const dx = positions.getX(i) - target.x
+          const dy = positions.getY(i) - target.y
+          const dz = positions.getZ(i) - target.z
+          const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
+          if (d > r) continue
+          const w = (1 - d / r) ** 2
+          const move = sign * intensity * w
+          positions.setX(i, positions.getX(i) + normals.getX(i) * move)
+          positions.setY(i, positions.getY(i) + normals.getY(i) * move)
+          positions.setZ(i, positions.getZ(i) + normals.getZ(i) * move)
+        }
+      }
+      positions.needsUpdate = true
+      geo.computeVertexNormals()
+    },
+
     setSuggestionZones(zones) {
       const { scene, mesh, suggestionGroup } = stateRef.current
       if (suggestionGroup) {
