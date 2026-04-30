@@ -183,7 +183,10 @@ export default function EditorPage() {
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 260px', height: '100vh' }}>
-      <ThreeViewer ref={viewerRef} onSculptCommit={commitSculpt} />
+      <div style={{ position: 'relative' }}>
+        <ThreeViewer ref={viewerRef} onSculptCommit={commitSculpt} />
+        <ViewControls onView={p => viewerRef.current?.setView(p)} />
+      </div>
 
       <div style={{ padding: 16, borderLeft: '1px solid #333', overflowY: 'auto', background: '#0f0f1a', color: '#e2e8f0' }}>
         <button onClick={() => navigate(`/case/${caseId}`)}
@@ -348,6 +351,36 @@ export default function EditorPage() {
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function ViewControls({ onView }) {
+  const VIEWS = [
+    ['front', 'Frente'],
+    ['back', 'Trás'],
+    ['left', 'Esq.'],
+    ['right', 'Dir.'],
+    ['top', 'Topo'],
+    ['bottom', 'Base'],
+    ['iso', 'Iso'],
+  ]
+  return (
+    <div style={{
+      position: 'absolute', top: 12, left: 12, display: 'flex', gap: 4,
+      background: 'rgba(15,15,26,0.85)', padding: 6, borderRadius: 6,
+      border: '1px solid rgba(255,255,255,0.1)',
+    }}>
+      {VIEWS.map(([id, label]) => (
+        <button key={id} onClick={() => onView(id)}
+          style={{
+            padding: '5px 9px', fontSize: 11, background: 'rgba(255,255,255,0.06)',
+            color: '#cbd5e0', border: '1px solid rgba(255,255,255,0.08)',
+            borderRadius: 4, cursor: 'pointer',
+          }}>
+          {label}
+        </button>
+      ))}
     </div>
   )
 }

@@ -148,6 +148,33 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       for (let i = 0; i < u8.length; i++) bin += String.fromCharCode(u8[i])
       return btoa(bin)
     },
+
+    setView(preset) {
+      const { camera, controls, mesh } = stateRef.current
+      if (!camera || !controls) return
+      // Distância adaptada ao tamanho do mesh (ou fallback 200)
+      let dist = 200
+      if (mesh) {
+        const box = new THREE.Box3().setFromObject(mesh)
+        const size = new THREE.Vector3()
+        box.getSize(size)
+        dist = Math.max(size.x, size.y, size.z) * 2.4
+      }
+      const PRESETS = {
+        front:  [+dist, 0, 0],
+        back:   [-dist, 0, 0],
+        left:   [0, +dist, 0],
+        right:  [0, -dist, 0],
+        top:    [0, 0, +dist],
+        bottom: [0, 0, -dist],
+        iso:    [+dist * 0.7, -dist * 0.7, +dist * 0.7],
+      }
+      const p = PRESETS[preset] ?? PRESETS.iso
+      camera.position.set(p[0], p[1], p[2])
+      controls.target.set(0, 0, 0)
+      camera.up.set(0, 0, 1)             // eixo Z é topo no nosso modelo
+      controls.update()
+    },
   }))
 
   useEffect(() => {
@@ -164,7 +191,8 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
     scene.background = new THREE.Color(0x1a1a2e)
 
     const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 1000)
-    camera.position.set(0, 0, 200)
+    camera.up.set(0, 0, 1)               // Z é topo no modelo gerado
+    camera.position.set(200, -150, 120)  // vista isométrica padrão
 
     const ambient = new THREE.AmbientLight(0xffffff, 0.6)
     const dirLight = new THREE.DirectionalLight(0xffffff, 0.8)
