@@ -64,6 +64,7 @@ export default function EvolutionPage() {
 
       {series.length > 0 && (
         <>
+          <ProgressCard series={series} />
           <CvaiChart series={series} />
           <EvolutionTable series={series} />
           <PhotoGallery series={series} />
@@ -238,6 +239,68 @@ function PhotoGallery({ series }) {
           </a>
         ))}
       </div>
+    </div>
+  )
+}
+
+function ProgressCard({ series }) {
+  const points = series
+    .filter(e => e.measurements?.cvai != null && e.date)
+    .map(e => ({ date: e.date, cvai: Number(e.measurements.cvai) }))
+  if (points.length === 0) return null
+
+  const baseline = points[0]
+  const last = points[points.length - 1]
+  const baselineMs = new Date(baseline.date).getTime()
+  const lastMs = new Date(last.date).getTime()
+  const monthsElapsed = (lastMs - baselineMs) / (30.44 * 86400 * 1000)
+
+  // Mesmo modelo do gráfico (Robinson 2009)
+  const projected = baseline.cvai * Math.exp(-0.18 * monthsElapsed)
+  const real = last.cvai
+  const reductionReal = baseline.cvai - real
+  const reductionProj = baseline.cvai - projected
+  // % do esperado: 100% = exatamente na curva. >100 = melhor.
+  // Quando ainda não houve redução projetada (mesma data), evita NaN.
+  const ratio = reductionProj > 0.001
+    ? (reductionReal / reductionProj) * 100
+    : 100
+
+  const isOnTrack = ratio >= 90 && ratio <= 130
+  const isAhead = ratio > 130
+  const isBehind = ratio < 90
+
+  const tone = isAhead ? '#2f855a' : isBehind ? '#c53030' : '#9f7aea'
+  const message = isAhead
+    ? '✅ Acima do esperado — evolução excelente'
+    : isBehind
+      ? '⚠️ Abaixo do esperado — considere revisar adesão ao tratamento'
+      : '👍 Dentro do esperado pela curva clínica'
+
+  return (
+    <div style={{ marginTop: 24, marginBottom: 24,
+      display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+      <Stat label="CVAI inicial" value={`${baseline.cvai}%`} color="#3182ce" />
+      <Stat label="CVAI atual" value={`${real}%`} color="#3182ce" />
+      <Stat label="Esperado agora" value={`${projected.toFixed(2)}%`} color="#a0aec0" />
+      <Stat label="% do esperado" value={`${ratio.toFixed(0)}%`} color={tone}
+        sub={`${monthsElapsed.toFixed(1)} mês(es) de tratamento`} />
+      <div style={{ gridColumn: '1 / -1', padding: '8px 12px',
+        background: tone + '15', color: tone, borderRadius: 6,
+        border: `1px solid ${tone}40`, fontSize: 13, fontWeight: 600 }}>
+        {message}
+      </div>
+    </div>
+  )
+}
+
+function Stat({ label, value, color, sub }) {
+  return (
+    <div style={{ background: '#f8fafc', borderRadius: 8, padding: 12,
+      borderTop: `3px solid ${color}` }}>
+      <div style={{ fontSize: 22, fontWeight: 700, color }}>{value}</div>
+      <div style={{ color: '#666', fontSize: 12 }}>{label}</div>
+      {sub && <div style={{ color: '#999', fontSize: 11, marginTop: 2 }}>{sub}</div>}
     </div>
   )
 }
