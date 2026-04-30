@@ -163,90 +163,79 @@ def split_into_two_parts(
     helmet: trimesh.Trimesh,
     outer_dims,
     pin_count: int = 4,
-    pin_radius: float = 2.0,
-    pin_length: float = 10.0,
-    pin_clearance: float = 0.15,
+    pin_radius: float = 2.5,        # parafuso M5
+    lug_extension: float = 12.0,    # quanto a aba sai radialmente
+    lug_thickness: float = 8.0,     # espessura ao longo do eixo X
+    lug_width: float = 16.0,        # largura tangencial da aba
 ):
     """
     Divide o capacete em duas peças (frontal e traseira) por um plano
-    coronal (YZ em x=0) e adiciona conectores macho/fêmea ao redor
-    da borda de corte.
+    coronal (YZ em x=0).
 
-    A peça frontal recebe os pinos cilíndricos (macho); a peça traseira
-    recebe os furos correspondentes (fêmea com folga `pin_clearance`).
-    Retorna {"front": mesh, "back": mesh, "pins": [(y, z), ...]}.
+    Os conectores ficam **fora** da casca como abas (lugs) radiais
+    saindo da superfície externa, sobre a linha de corte. Cada lug
+    é dividido pelo plano de corte: metade fica em cada peça. Quando
+    as peças são juntadas, as duas metades se encostam e um parafuso
+    passante (eixo X) atravessa ambas, fixando as peças sem invadir
+    o espaço interno da cabeça do bebê.
     """
     ax, ay, az = outer_dims
 
-    # Caixas que removem a metade contralateral
+    # Posições (y, z) em torno da circunferência do corte
+    # 1 no topo, 2 laterais, 1 base (mesmas posições angulares)
+    lug_layout = []
+    lug_layout.append((0, +az))            # topo
+    lug_layout.append((+ay, 0.0))          # lateral direita
+    lug_layout.append((-ay, 0.0))          # lateral esquerda
+    if pin_count >= 4:
+        lug_layout.append((0, -az * 0.55)) # base (próxima à abertura frontal)
+    lug_layout = lug_layout[:pin_count]
+
+    # Adiciona os lugs ao capacete inteiro ANTES de cortar — assim eles
+    # se dividem naturalmente pelo plano de corte
+    helmet_with_lugs = helmet
+    for (y_surf, z_surf) in lug_layout:
+        norm = (y_surf ** 2 + z_surf ** 2) ** 0.5
+        if norm < 0.001:
+            continue
+        ny, nz = y_surf / norm, z_surf / norm
+        # centro da aba: deslocado radialmente para fora
+        cy = y_surf + ny * lug_extension / 2
+        cz = z_surf + nz * lug_extension / 2
+
+        # caixa centrada no plano X=0 (será cortada pelo split)
+        # Eixos: X = espessura ao longo do split (lug_thickness)
+        #        Y' = direção radial (lug_extension)
+        #        Z' = tangencial (lug_width)
+        lug = trimesh.creation.box(extents=(lug_thickness, lug_extension, lug_width))
+        # alinha Y' do box com a direção radial (ny, nz) no plano YZ
+        angle = np.arctan2(nz, ny)
+        R_lug = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+        lug.apply_transform(R_lug)
+        lug.apply_translation([0, cy, cz])
+        helmet_with_lugs = union([helmet_with_lugs, lug])
+
+        # Furo passante eixo X (será cortado pelas duas peças)
+        hole = trimesh.creation.cylinder(
+            radius=pin_radius, height=lug_thickness * 1.4, sections=16,
+        )
+        # cilindro está no eixo Z; rotaciona pra X
+        R_hole = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+        hole.apply_transform(R_hole)
+        hole.apply_translation([0, cy, cz])
+        helmet_with_lugs = difference([helmet_with_lugs, hole])
+
+    # Caixas que removem a metade contralateral (split coronal)
     back_remover = trimesh.creation.box(extents=(ax * 4, ay * 4, az * 4))
     back_remover.apply_translation([-ax * 2 - 0.001, 0, 0])
 
     front_remover = trimesh.creation.box(extents=(ax * 4, ay * 4, az * 4))
     front_remover.apply_translation([ax * 2 + 0.001, 0, 0])
 
-    front_part = difference([helmet, back_remover])
-    back_part = difference([helmet, front_remover])
+    front_part = difference([helmet_with_lugs, back_remover])
+    back_part = difference([helmet_with_lugs, front_remover])
 
-    # Distribui pinos pela borda do corte (no plano YZ)
-    # 1 no topo, 2 laterais ao nível do meio, 1 atrás se >=4
-    pin_layout = []
-    pin_layout.append((0, az * 0.85))        # topo central
-    pin_layout.append((+ay * 0.85, 0.0))     # lateral direita
-    pin_layout.append((-ay * 0.85, 0.0))     # lateral esquerda
-    if pin_count >= 4:
-        pin_layout.append((0, -az * 0.50))   # base central (frente da abertura)
-    pin_layout = pin_layout[:pin_count]
-
-    # Boss = cilindro mais largo que engrossa a parede ao redor de cada
-    # pino/furo. Aumenta resistência mecânica (FDM tem fraqueza nas
-    # camadas, então pinos retos sob tensão lateral podem quebrar).
-    boss_radius = pin_radius * 2.2
-    boss_length = pin_length * 0.9    # menor que o pino: pino ainda
-                                      # protrude além do boss
-
-    R_x = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
-    for (y, z) in pin_layout:
-        # Boss frontal: cilindro saliente que une com a peça frontal
-        # (protrudindo do plano de corte para o +x, dentro da peça)
-        front_boss = trimesh.creation.cylinder(
-            radius=boss_radius, height=boss_length, sections=20,
-        )
-        front_boss.apply_transform(R_x)
-        # centro deslocado pra dentro da peça frontal (x positivo)
-        front_boss.apply_translation([+boss_length * 0.5, y, z])
-        front_part = union([front_part, front_boss])
-
-        # Pino macho sólido, eixo X — passa pelo boss frontal e atravessa
-        # o plano de corte
-        pin = trimesh.creation.cylinder(
-            radius=pin_radius, height=pin_length, sections=16,
-        )
-        pin.apply_transform(R_x)
-        pin.apply_translation([0, y, z])
-        front_part = union([front_part, pin])
-
-        # Boss traseiro: engrossa a parede da peça traseira ao redor
-        # do furo (protrudindo do plano de corte para -x, dentro da
-        # peça traseira)
-        back_boss = trimesh.creation.cylinder(
-            radius=boss_radius, height=boss_length, sections=20,
-        )
-        back_boss.apply_transform(R_x)
-        back_boss.apply_translation([-boss_length * 0.5, y, z])
-        back_part = union([back_part, back_boss])
-
-        # Furo passante com folga, atravessa boss + parede
-        hole = trimesh.creation.cylinder(
-            radius=pin_radius + pin_clearance,
-            height=pin_length * 1.6,
-            sections=16,
-        )
-        hole.apply_transform(R_x)
-        hole.apply_translation([-pin_length * 0.05, y, z])
-        back_part = difference([back_part, hole])
-
-    return {"front": front_part, "back": back_part, "pins": pin_layout}
+    return {"front": front_part, "back": back_part, "pins": lug_layout}
 
 
 def _frontal_arch_cutter(outer_dims) -> trimesh.Trimesh:

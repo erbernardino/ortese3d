@@ -119,9 +119,10 @@ def split_helmet_endpoint(data: dict):
         result = split_into_two_parts(
             helmet, outer_dims,
             pin_count=int(data.get("pin_count", 4)),
-            pin_radius=float(data.get("pin_radius_mm", 2.0)),
-            pin_length=float(data.get("pin_length_mm", 10.0)),
-            pin_clearance=float(data.get("pin_clearance_mm", 0.15)),
+            pin_radius=float(data.get("pin_radius_mm", 2.5)),
+            lug_extension=float(data.get("lug_extension_mm", 12.0)),
+            lug_thickness=float(data.get("lug_thickness_mm", 8.0)),
+            lug_width=float(data.get("lug_width_mm", 16.0)),
         )
 
         def to_b64(mesh):

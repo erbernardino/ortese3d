@@ -33,6 +33,7 @@ export default function EditorPage() {
   const [hoverInfo, setHoverInfo] = useState(null)
   const [splitting, setSplitting] = useState(false)
   const [splitParts, setSplitParts] = useState(null)
+  const [splitGap, setSplitGap] = useState(0)
   const fileInputRef = useRef(null)
   const [sculptActive, setSculptActive] = useState(false)
   const [sculptRadius, setSculptRadius] = useState(8)
@@ -108,7 +109,9 @@ export default function EditorPage() {
     try {
       const result = await pythonApi.splitHelmet({ stl_b64: currentStl })
       setSplitParts(result)
+      setSplitGap(0)
       viewerRef.current?.loadSplitParts(result.front_stl_b64, result.back_stl_b64)
+      viewerRef.current?.setSplitGap(0)
     } catch (e) {
       setError(`Falha ao dividir capacete: ${e.message}`)
     } finally {
@@ -457,6 +460,17 @@ export default function EditorPage() {
               border: '1px solid rgba(237,137,54,0.25)' }}>
               <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6,
                 textTransform: 'uppercase' }}>Peças geradas</div>
+
+              <label style={{ display: 'block', fontSize: 11, opacity: 0.8 }}>
+                Vista explodida: {splitGap} mm
+              </label>
+              <input type="range" min="0" max="80" step="2" value={splitGap}
+                onChange={e => {
+                  const v = Number(e.target.value)
+                  setSplitGap(v)
+                  viewerRef.current?.setSplitGap(v)
+                }}
+                style={{ width: '100%', marginBottom: 6 }} />
               <button onClick={() => downloadSplitPart(splitParts.front_stl_b64, 'capacete-frontal.stl')}
                 style={{ display: 'block', width: '100%', padding: '6px',
                   marginBottom: 4, background: 'rgba(136,204,255,0.15)',

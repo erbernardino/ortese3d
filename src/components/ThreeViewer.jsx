@@ -150,6 +150,8 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
 
       const front = makeMesh(frontB64, 0x88ccff)  // azul
       const back = makeMesh(backB64, 0xfbbf24)    // âmbar
+      front.userData.role = 'front'
+      back.userData.role = 'back'
 
       group.add(front, back)
       // Centra o grupo
@@ -159,7 +161,17 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       group.position.sub(center)
       scene.add(group)
       stateRef.current.splitGroup = group
+      stateRef.current.splitFront = front
+      stateRef.current.splitBack = back
       stateRef.current.mesh = front     // sculpt/raycast usa a peça frontal por padrão
+    },
+
+    setSplitGap(gapMm) {
+      const { splitFront, splitBack } = stateRef.current
+      if (!splitFront || !splitBack) return
+      // peça frontal vai pra +x, traseira pra -x (split é coronal em x=0)
+      splitFront.position.x = +gapMm / 2
+      splitBack.position.x = -gapMm / 2
     },
 
     setOverlayStl(stlB64) {
