@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { caseService } from '../services/caseService'
 import { notificationService } from '../services/notificationService'
+import { cacheService } from '../services/cacheService'
 
 const STATUS_LABEL = {
   draft: 'Rascunho', sent: 'Enviado', in_progress: 'Em andamento',
@@ -14,11 +15,30 @@ export default function DashboardPage() {
   const navigate = useNavigate()
   const [cases, setCases] = useState([])
   const [notifications, setNotifications] = useState([])
+  const [online, setOnline] = useState(cacheService.isOnline())
+  const [pendingCount, setPendingCount] = useState(0)
 
   useEffect(() => {
     if (!user) return
     return notificationService.subscribe(user.uid, setNotifications)
   }, [user])
+
+  useEffect(() => {
+    function updateStatus() { setOnline(cacheService.isOnline()) }
+    window.addEventListener('online', updateStatus)
+    window.addEventListener('offline', updateStatus)
+    async function refreshPending() {
+      const ops = await cacheService.pendingOps()
+      setPendingCount(ops.length)
+    }
+    refreshPending()
+    const unsub = cacheService.subscribe(refreshPending)
+    return () => {
+      window.removeEventListener('online', updateStatus)
+      window.removeEventListener('offline', updateStatus)
+      unsub()
+    }
+  }, [])
 
   useEffect(() => {
     if (!user) return
@@ -31,6 +51,17 @@ export default function DashboardPage() {
 
   return (
     <div style={{ maxWidth: 900, margin: '40px auto', padding: 24 }}>
+      {(!online || pendingCount > 0) && (
+        <div style={{
+          padding: '8px 12px', marginBottom: 16, borderRadius: 6, fontSize: 13,
+          background: online ? '#fefcbf' : '#fed7d7',
+          color: online ? '#744210' : '#742a2a',
+          border: `1px solid ${online ? '#f6e05e' : '#fc8181'}`,
+        }}>
+          {!online && '⚠️ Sem conexão — alterações serão sincronizadas quando voltar a internet. '}
+          {pendingCount > 0 && `${pendingCount} operação(ões) na fila de sincronização.`}
+        </div>
+      )}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 24 }}>
         <h1 style={{ margin: 0 }}>OrteseCAD</h1>
         <div>

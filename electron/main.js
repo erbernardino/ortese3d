@@ -1,8 +1,26 @@
-const { app, BrowserWindow } = require('electron')
+const { app, BrowserWindow, ipcMain } = require('electron')
 const path = require('path')
+const Store = require('electron-store')
 const { startPython, stopPython } = require('./python-manager')
 
 const isDev = !app.isPackaged
+
+const store = new Store({
+  name: 'ortese3d-cache',
+  defaults: {
+    cases: {},
+    patients: {},
+    pendingOps: [],
+  },
+})
+
+function registerCacheHandlers() {
+  ipcMain.handle('cache:get', (_e, key) => store.get(key))
+  ipcMain.handle('cache:set', (_e, key, value) => store.set(key, value))
+  ipcMain.handle('cache:delete', (_e, key) => store.delete(key))
+  ipcMain.handle('cache:clear', () => store.clear())
+  ipcMain.handle('cache:has', (_e, key) => store.has(key))
+}
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -22,6 +40,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  registerCacheHandlers()
   await startPython()
   createWindow()
 })
