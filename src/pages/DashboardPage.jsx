@@ -17,6 +17,7 @@ export default function DashboardPage() {
   const [notifications, setNotifications] = useState([])
   const [online, setOnline] = useState(cacheService.isOnline())
   const [pendingCount, setPendingCount] = useState(0)
+  const [showArchived, setShowArchived] = useState(false)
 
   useEffect(() => {
     if (!user) return
@@ -49,9 +50,11 @@ export default function DashboardPage() {
     caseService.listForUser(user.uid, user.role).then(setCases)
   }, [user])
 
-  const active = cases.filter(c => !['approved', 'exported'].includes(c.status))
-  const done = cases.filter(c => ['approved', 'exported'].includes(c.status))
-  const pending = cases.filter(c => c.status === 'review')
+  const visible = showArchived ? cases : cases.filter(c => !c.archived)
+  const archivedCount = cases.filter(c => c.archived).length
+  const active = visible.filter(c => !['approved', 'exported'].includes(c.status))
+  const done = visible.filter(c => ['approved', 'exported'].includes(c.status))
+  const pending = visible.filter(c => c.status === 'review')
 
   return (
     <div style={{ maxWidth: 900, margin: '40px auto', padding: 24 }}>
@@ -94,19 +97,32 @@ export default function DashboardPage() {
         </button>
       )}
 
-      <h2>Casos Recentes</h2>
-      {cases.length === 0 && <p style={{ color: '#666' }}>Nenhum caso encontrado.</p>}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <h2 style={{ margin: 0 }}>Casos Recentes</h2>
+        {archivedCount > 0 && (
+          <label style={{ fontSize: 13, color: '#666', cursor: 'pointer' }}>
+            <input type="checkbox" checked={showArchived}
+              onChange={e => setShowArchived(e.target.checked)}
+              style={{ marginRight: 6 }} />
+            Mostrar arquivados ({archivedCount})
+          </label>
+        )}
+      </div>
+      {visible.length === 0 && <p style={{ color: '#666' }}>Nenhum caso encontrado.</p>}
       <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-        {cases.map(c => (
+        {visible.map(c => (
           <li key={c.id}
             onClick={() => navigate(`/case/${c.id}`)}
             style={{
               cursor: 'pointer', padding: '12px 16px',
               border: '1px solid #e2e8f0', borderRadius: 8,
               marginBottom: 8, display: 'flex', justifyContent: 'space-between',
-              alignItems: 'center',
+              alignItems: 'center', opacity: c.archived ? 0.55 : 1,
             }}>
-            <strong>{c.patientName ?? '...'}</strong>
+            <span>
+              <strong>{c.patientName ?? '...'}</strong>
+              {c.archived && <span style={{ marginLeft: 8, fontSize: 11, color: '#666' }}>📁 arquivado</span>}
+            </span>
             <span style={{ fontSize: 13, color: '#666' }}>{STATUS_LABEL[c.status]}</span>
           </li>
         ))}

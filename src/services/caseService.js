@@ -89,6 +89,12 @@ export const caseService = {
     return this.update(caseId, { assignedTo: orthotistUid, status: 'sent' })
   },
 
+  async setArchived(caseId, archived) {
+    analyticsService.track(archived ? 'case_archived' : 'case_unarchived',
+      { case_id: caseId })
+    return this.update(caseId, { archived: !!archived })
+  },
+
   subscribeToCase(caseId, callback) {
     if (caseId.startsWith(TEMP_PREFIX)) {
       cacheService.getCases().then(cs => { if (cs[caseId]) callback(cs[caseId]) })

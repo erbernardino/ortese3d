@@ -74,11 +74,18 @@ export default function CasePage() {
         </div>
       )}
 
-      <div style={{ marginTop: 24 }}>
+      <div style={{ marginTop: 24, display: 'flex', gap: 8 }}>
         <button onClick={() => navigate(`/evolution/${currentCaseId}`)}
           style={{ background: '#9f7aea', color: 'white', border: 'none',
             borderRadius: 6, padding: '8px 16px' }}>
           📊 Acompanhamento de Evolução
+        </button>
+        <button onClick={async () => {
+          await caseService.setArchived(currentCaseId, !caseData?.archived)
+        }}
+          style={{ background: caseData?.archived ? '#ed8936' : '#a0aec0',
+            color: 'white', border: 'none', borderRadius: 6, padding: '8px 16px' }}>
+          {caseData?.archived ? '📂 Desarquivar' : '📁 Arquivar caso'}
         </button>
       </div>
     </div>
