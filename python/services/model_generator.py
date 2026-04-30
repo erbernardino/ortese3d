@@ -39,6 +39,12 @@ def generate_from_measurements(m: dict) -> trimesh.Trimesh:
     ear_holes = m.get("ear_holes", True)
     chamfer = m.get("chamfer_bottom", True)
     reinforcements = m.get("reinforcements", False)  # opt-in
+    # condition_type: 'plagiocephaly' | 'brachycephaly' | None
+    # determina o formato da trim line superior (Sprout3D approach):
+    #   plagio → corte oval (E-D) que guia simetria lateral
+    #   braqui → corte alongado curvo (F-O) que estimula crescimento
+    #            longitudinal corrigindo achatamento occipital
+    condition_type = m.get("condition_type")
 
     outer_dims = np.array([ax + offset, ay + offset, az + offset * 0.5])
     inner_dims = outer_dims - wall
@@ -73,6 +79,18 @@ def generate_from_measurements(m: dict) -> trimesh.Trimesh:
 
     if chamfer:
         helmet = difference([helmet, _bottom_chamfer_cutter(outer_dims)])
+
+    if condition_type:
+        trim_cutter = _top_trim_line(condition_type, outer_dims)
+        if trim_cutter is not None:
+            try:
+                helmet = difference([helmet, trim_cutter])
+            except ValueError:
+                helmet.process(validate=True)
+                try:
+                    helmet = difference([helmet, trim_cutter])
+                except ValueError:
+                    pass
 
     return helmet
 
@@ -168,6 +186,59 @@ def _skull_shape(ax, ay, az, subdivisions=4) -> trimesh.Trimesh:
 # Aberturas (A)
 # ---------------------------------------------------------------------------
 
+def _rounded_plate(thickness, extension, width, sections=16):
+    """
+    Plate (aba) com cantos arredondados — substitui box pra evitar
+    pontas vivas. Eixos do mesh resultante: thickness em X, extension
+    em Y, width em Z.
+
+    Construção: caixa central + 4 cilindros nos cantos + 4 caixas de
+    cantilever pra preencher entre os cilindros. O resultado tem
+    todas as bordas verticais arredondadas com raio min(width, extension)/2.
+    """
+    radius = min(width, extension) * 0.4
+    # box central reduzida pra deixar espaço pros cantos arredondados
+    inner_ext = max(0.001, extension - 2 * radius)
+    inner_wid = max(0.001, width - 2 * radius)
+
+    parts = []
+    if inner_ext > 0.001 and inner_wid > 0.001:
+        center = trimesh.creation.box(extents=(thickness, inner_ext, inner_wid))
+        parts.append(center)
+    # 2 boxes laterais (preenchem ao longo do width)
+    if inner_wid > 0.001:
+        side1 = trimesh.creation.box(extents=(thickness, 2 * radius, inner_wid))
+        side1.apply_translation([0, +(extension - 2 * radius) / 2, 0])
+        parts.append(side1)
+        side2 = trimesh.creation.box(extents=(thickness, 2 * radius, inner_wid))
+        side2.apply_translation([0, -(extension - 2 * radius) / 2, 0])
+        parts.append(side2)
+    # 2 boxes superiores e inferiores
+    if inner_ext > 0.001:
+        top = trimesh.creation.box(extents=(thickness, inner_ext, 2 * radius))
+        top.apply_translation([0, 0, +(width - 2 * radius) / 2])
+        parts.append(top)
+        bot = trimesh.creation.box(extents=(thickness, inner_ext, 2 * radius))
+        bot.apply_translation([0, 0, -(width - 2 * radius) / 2])
+        parts.append(bot)
+    # 4 cilindros nos cantos (eixo X = thickness)
+    R_x = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+    for sy, sz in [(+1, +1), (+1, -1), (-1, +1), (-1, -1)]:
+        cyl = trimesh.creation.cylinder(radius=radius, height=thickness, sections=sections)
+        cyl.apply_transform(R_x)
+        cyl.apply_translation([
+            0,
+            sy * (extension / 2 - radius),
+            sz * (width / 2 - radius),
+        ])
+        parts.append(cyl)
+
+    plate = parts[0]
+    for p in parts[1:]:
+        plate = union([plate, p])
+    return plate
+
+
 def _slide_latch_male(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
                       lug_width=22.0, neck_radius=2.5, head_radius=4.5,
                       neck_length=4.0, head_length=2.0):
@@ -185,8 +256,8 @@ def _slide_latch_male(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
     # Posição do centro da aba — afastada radialmente
     cx, cy, cz = 0, y_pos + ny * lug_extension / 2, z_pos + nz * lug_extension / 2
 
-    # Plate (aba retangular). X = espessura split, Y' = radial, Z' = tangencial
-    plate = trimesh.creation.box(extents=(lug_thickness, lug_extension, lug_width))
+    # Plate (aba) com cantos arredondados — sem pontas vivas
+    plate = _rounded_plate(lug_thickness, lug_extension, lug_width)
     plate.apply_transform(R)
     plate.apply_translation([cx, cy, cz])
 
@@ -227,7 +298,7 @@ def _slide_latch_female(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
 
     cx, cy, cz = 0, y_pos + ny * lug_extension / 2, z_pos + nz * lug_extension / 2
 
-    plate = trimesh.creation.box(extents=(lug_thickness, lug_extension, lug_width))
+    plate = _rounded_plate(lug_thickness, lug_extension, lug_width)
     plate.apply_transform(R)
     plate.apply_translation([cx, cy, cz])
 
@@ -245,18 +316,35 @@ def _slide_latch_female(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
     big_offset = R[:3, :3] @ big_offset_local
     big_hole.apply_translation([cx, cy + big_offset[1], cz + big_offset[2]])
 
-    # Slot ESTREITO (passa só o pescoço): caixa fina ao longo do eixo Z' do plate
-    narrow = trimesh.creation.box(extents=(
-        lug_thickness * 1.5,                    # X: através
-        (neck_radius + clearance) * 2,          # Y': largura igual ao diâmetro do pescoço
-        slot_length,                            # Z': comprimento ao longo do plate
+    # Slot ESTREITO (passa só o pescoço): caixa fina + 2 cilindros nas
+    # extremidades (capsule) — sem cantos vivos no perímetro do slot
+    nr = neck_radius + clearance
+    narrow_box = trimesh.creation.box(extents=(
+        lug_thickness * 1.5,
+        2 * nr,
+        slot_length,
     ))
-    narrow.apply_transform(R)
-    narrow.apply_translation([cx, cy, cz])
+    narrow_box.apply_transform(R)
+    narrow_box.apply_translation([cx, cy, cz])
 
-    # trimesh.boolean.difference só aceita 2 meshes — encadear
+    # caps nas pontas do slot (eixo X passante)
+    R_x_local = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+    end_caps = []
+    for sign in (-1, +1):
+        cap = trimesh.creation.cylinder(
+            radius=nr, height=lug_thickness * 1.5, sections=16,
+        )
+        cap.apply_transform(R_x_local)
+        # offset ao longo do eixo Z' (tangencial) do plate
+        offset_local = np.array([0, 0, sign * slot_length / 2])
+        offset = R[:3, :3] @ offset_local
+        cap.apply_translation([cx + offset[1] * 0, cy + offset[1], cz + offset[2]])
+        end_caps.append(cap)
+
     plate_with_slot = difference([plate, big_hole])
-    plate_with_slot = difference([plate_with_slot, narrow])
+    plate_with_slot = difference([plate_with_slot, narrow_box])
+    for cap in end_caps:
+        plate_with_slot = difference([plate_with_slot, cap])
     return plate_with_slot
 
 
@@ -389,6 +477,47 @@ def _ear_cutters(outer_dims):
         cap.apply_translation([ax * 0.05, sign * ay * 0.95, -az * 0.55])
         cuts.append(cap)
     return cuts
+
+
+def _top_trim_line(condition_type, outer_dims):
+    """
+    Trim line no topo do capacete específica para a condição clínica.
+    Padrão Sprout3D — Surestep oferece dois cortes distintos:
+
+    - 'plagiocephaly': abertura OVAL (eixo E-D maior). A abertura
+      lateralmente alongada deixa o crânio se simetrizar livremente
+      em relação ao plano sagital.
+    - 'brachycephaly': abertura CURVA E ALONGADA (eixo F-O maior).
+      Tira contato com a região occipital achatada, estimulando
+      crescimento posterior para alongar a forma craniana.
+    """
+    ax, ay, az = outer_dims
+    max_r = max(outer_dims) * 1.6
+    z_pen = max_r * 0.6     # profundidade de penetração radial
+
+    if condition_type == 'plagiocephaly':
+        # Oval lateral: comprimento Y > largura X
+        ellipse_x = ax * 0.50      # extensão F-O moderada
+        ellipse_y = ay * 0.85      # largo lateralmente (E-D)
+    elif condition_type == 'brachycephaly':
+        # Alongado F-O: comprimento X >> largura Y
+        ellipse_x = ax * 0.95      # estende quase toda a anteroposterior
+        ellipse_y = ay * 0.45      # estreito lateralmente
+    else:
+        return None
+
+    # Constrói uma cápsula achatada via icosphere escalada — depois
+    # subtrai do topo para gerar abertura. Usar icosphere garante
+    # mesh manifold após escalonamento.
+    cutter = trimesh.creation.icosphere(subdivisions=4)
+    # Escalonamento: largo em XY (forma do trim), fino em Z (achatado)
+    cutter.vertices = cutter.vertices * np.array([
+        ellipse_x, ellipse_y, az * 0.35,
+    ])
+    # Posiciona no topo, ligeiramente para baixo para o "diâmetro"
+    # do cutter ficar acima do plano superior
+    cutter.apply_translation([0, 0, az * 0.95])
+    return cutter
 
 
 def _bottom_chamfer_cutter(outer_dims):

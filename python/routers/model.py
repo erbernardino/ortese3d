@@ -25,6 +25,7 @@ class MeasurementsInput(BaseModel):
     height: float
     offset_mm: float = 4.0
     wall_mm: float = 3.0
+    condition_type: str | None = None      # 'plagiocephaly' | 'brachycephaly'
 
 
 @router.post("/generate")

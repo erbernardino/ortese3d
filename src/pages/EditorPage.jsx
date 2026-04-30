@@ -262,6 +262,7 @@ export default function EditorPage() {
         height: Number(m.height) || 72,
         offset_mm: 4,
         wall_mm: thickness,
+        condition_type: detectConditionType(caseData?.patientDiagnosis),
       })
       viewerRef.current?.loadStlBase64(result.stl_b64)
       push(result.stl_b64)
@@ -651,6 +652,16 @@ function detectAffectedSide(diagnosis) {
   const d = diagnosis.toLowerCase()
   if (/\b(direit|right)/.test(d)) return 'right'
   if (/\b(esquer|left)/.test(d)) return 'left'
+  return null
+}
+
+function detectConditionType(diagnosis) {
+  if (!diagnosis) return null
+  const d = diagnosis.toLowerCase()
+  // braquicefalia primeiro (mais específico) pra não bater no plagiocefalia
+  // se o texto incluir as duas palavras
+  if (/braqui|brachy/.test(d)) return 'brachycephaly'
+  if (/plagi|plagi/.test(d)) return 'plagiocephaly'
   return null
 }
 
