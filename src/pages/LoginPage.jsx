@@ -49,6 +49,7 @@ export default function LoginPage() {
             <select value={form.role} onChange={e => set('role', e.target.value)}>
               <option value="doctor">Médico / Clínico</option>
               <option value="orthotist">Ortesista</option>
+              <option value="study_coordinator">Coordenador do Estudo</option>
             </select>
           </>
         )}

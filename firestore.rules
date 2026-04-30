@@ -11,30 +11,42 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/cases/$(caseId));
     }
 
-    // Perfis: cada usuário só lê e escreve o próprio doc
+    function userRole() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isCoordinator() {
+      return isSignedIn() && userRole() == 'study_coordinator';
+    }
+
+    // Perfis: cada usuário só lê e escreve o próprio doc; coordenador lê todos
     match /users/{uid} {
-      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow read: if isSignedIn() && (request.auth.uid == uid || isCoordinator());
       allow create: if isSignedIn() && request.auth.uid == uid
-                    && request.resource.data.role in ['doctor', 'orthotist'];
+                    && request.resource.data.role in ['doctor', 'orthotist', 'study_coordinator'];
       allow update: if isSignedIn() && request.auth.uid == uid;
       allow delete: if false;
     }
 
-    // Pacientes: somente o médico criador acessa
+    // Pacientes: somente o médico criador acessa; coordenador lê para o estudo
     // (ortesistas leem dados denormalizados no doc do caso)
     match /patients/{patientId} {
-      allow read:   if isSignedIn() && resource.data.createdBy == request.auth.uid;
+      allow read:   if isSignedIn() && (
+                      resource.data.createdBy == request.auth.uid || isCoordinator()
+                    );
       allow create: if isSignedIn()
                     && request.resource.data.createdBy == request.auth.uid;
       allow update: if isSignedIn() && resource.data.createdBy == request.auth.uid;
       allow delete: if false;
     }
 
-    // Casos: leitura/escrita por médico criador OU ortesista atribuído
+    // Casos: leitura/escrita por médico criador OU ortesista atribuído.
+    // Coordenador lê todos para análise do estudo.
     match /cases/{caseId} {
       allow read: if isSignedIn() && (
         resource.data.createdBy == request.auth.uid ||
-        resource.data.assignedTo == request.auth.uid
+        resource.data.assignedTo == request.auth.uid ||
+        isCoordinator()
       );
       allow create: if isSignedIn()
                     && request.resource.data.createdBy == request.auth.uid;
@@ -44,11 +56,12 @@ service cloud.firestore {
       );
       allow delete: if false;
 
-      // Avaliações de evolução do paciente — mesmas regras do caso
+      // Avaliações de evolução — mesmas regras do caso + coordenador lê
       match /evaluations/{evalId} {
         allow read: if isSignedIn() && (
           caseRefBy(caseId).data.createdBy == request.auth.uid ||
-          caseRefBy(caseId).data.assignedTo == request.auth.uid
+          caseRefBy(caseId).data.assignedTo == request.auth.uid ||
+          isCoordinator()
         );
         allow create: if isSignedIn() && (
           caseRefBy(caseId).data.createdBy == request.auth.uid ||

@@ -7,6 +7,7 @@ import CasePage from './pages/CasePage'
 import EditorPage from './pages/EditorPage'
 import ValidationPage from './pages/ValidationPage'
 import EvolutionPage from './pages/EvolutionPage'
+import StudyDashboardPage from './pages/StudyDashboardPage'
 
 function AuthGuard({ children }) {
   const { user } = useAuth()
@@ -27,6 +28,7 @@ export default function App() {
         <Route path="/editor/:caseId" element={<AuthGuard><EditorPage /></AuthGuard>} />
         <Route path="/validation/:caseId" element={<AuthGuard><ValidationPage /></AuthGuard>} />
         <Route path="/evolution/:caseId" element={<AuthGuard><EvolutionPage /></AuthGuard>} />
+        <Route path="/study" element={<AuthGuard><StudyDashboardPage /></AuthGuard>} />
       </Routes>
     </BrowserRouter>
   )

@@ -20,6 +20,10 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!user) return
+    if (user.role === 'study_coordinator') {
+      navigate('/study', { replace: true })
+      return
+    }
     return notificationService.subscribe(user.uid, setNotifications)
   }, [user])
 
