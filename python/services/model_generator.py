@@ -53,7 +53,16 @@ def generate_from_measurements(m: dict) -> trimesh.Trimesh:
 
     if vent_holes > 0:
         for cyl in _vent_cylinders(outer_dims, vent_holes, vent_radius):
-            helmet = difference([helmet, cyl])
+            try:
+                helmet = difference([helmet, cyl])
+            except ValueError:
+                # Recupera helmet se virou non-volume (pode acontecer com
+                # muitos boolean encadeados em flower clusters)
+                helmet.process(validate=True)
+                try:
+                    helmet = difference([helmet, cyl])
+                except ValueError:
+                    continue        # pula este slot
 
     if ear_holes:
         for cut in _ear_cutters(outer_dims):
@@ -401,30 +410,97 @@ def _bottom_chamfer_cutter(outer_dims):
 # Ventilação (densidade variável)
 # ---------------------------------------------------------------------------
 
+def _flower_vent_cluster(center, direction, petal_count=8,
+                         petal_radius=2.0, petal_length=10.0,
+                         center_offset=2.5, depth=20.0):
+    """
+    Cluster de pétalas radiais inspirado no logo Sphera Policlínica.
+    Retorna **lista** de N pétalas (cilindros) + 1 cilindro central como
+    cutters separados — cada um é mesh manifold individual.
+    """
+    z_axis = np.array([0, 0, 1])
+    direction = np.asarray(direction, dtype=float)
+    direction = direction / np.linalg.norm(direction)
+    if not np.allclose(direction, z_axis):
+        rot_axis = np.cross(z_axis, direction)
+        rot_norm = np.linalg.norm(rot_axis)
+        if rot_norm > 1e-9:
+            angle = np.arccos(np.clip(np.dot(z_axis, direction), -1, 1))
+            R_align = trimesh.transformations.rotation_matrix(angle, rot_axis / rot_norm)
+        else:
+            R_align = np.eye(4)
+    else:
+        R_align = np.eye(4)
+
+    cutters = []
+    # Pétalas: cilindros tangenciais distribuídos radialmente
+    for i in range(petal_count):
+        angle = (2 * np.pi * i) / petal_count
+        cyl = trimesh.creation.cylinder(
+            radius=petal_radius, height=petal_length, sections=12,
+        )
+        # eixo em Z; deita em Y; afasta do centro; gira pra ângulo do petal
+        R_lay = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
+        cyl.apply_transform(R_lay)
+        cyl.apply_translation([0, center_offset + petal_length / 2, 0])
+        R_spin = trimesh.transformations.rotation_matrix(angle, [0, 0, 1])
+        cyl.apply_transform(R_spin)
+        # Adiciona profundidade radial: como o cilindro está deitado em Y,
+        # a perfuração radial precisa de outro cutter — usamos uma esfera
+        # alongada via aumento de raio em Z após alinhar
+        cyl.apply_transform(R_align)
+        cyl.apply_translation(center)
+        cutters.append(cyl)
+
+    # Cilindro central de penetração: cobre todo o cluster radialmente.
+    # Garante que o cluster perfure de fato a casca.
+    bore = trimesh.creation.cylinder(
+        radius=center_offset + petal_length * 0.55,
+        height=depth, sections=20,
+    )
+    bore.apply_transform(R_align)
+    bore.apply_translation(center)
+    cutters.append(bore)
+    return cutters
+
+
 def _vent_cylinders(outer_dims, n_holes, radius):
     """
-    Distribui furos via Fibonacci sphere mas com ponderação:
-      - mais furos no topo (z alto)
-      - menos furos perto da abertura frontal e das orelhas
+    Padrão híbrido: 1 cluster "flor Sphera" no centro do topo +
+    slots ovais simples (capsules) nas outras posições.
     """
     ax, ay, az = outer_dims
     max_r = max(outer_dims) * 1.6
-    cylinders = []
+    cutters = []
 
-    for i in range(n_holes * 2):       # gera o dobro e descarta
+    # Cluster Sphera no topo (z máximo)
+    top_center = np.array([0.0, 0.0, az])
+    top_dir = np.array([0.0, 0.0, 1.0])
+    cutters.extend(_flower_vent_cluster(
+        top_center, top_dir,
+        petal_count=8,
+        petal_radius=radius * 0.7,
+        petal_length=radius * 2.8,
+        center_offset=radius * 0.7,
+        depth=max_r,
+    ))
+
+    # Slots ovais nos demais pontos
+    remaining = max(0, n_holes - 8)
+    placed = 0
+    for i in range(remaining * 2):
         idx = i + 0.5
-        phi = np.arccos(1 - 2 * idx / (n_holes * 4))
+        phi = np.arccos(1 - 2 * idx / (remaining * 4))
         theta = np.pi * (1 + 5 ** 0.5) * idx
         x = np.sin(phi) * np.cos(theta)
         y = np.sin(phi) * np.sin(theta)
         z = np.cos(phi)
 
-        if z < 0.25:                  # ignora hemisfério inferior
+        # ignora hemisfério inferior + zona do cluster topo (z muito alto)
+        if z < 0.30 or z > 0.85:
             continue
-        # menos furos perto das orelhas (|y| alto e z baixo)
         if abs(y) > 0.85 and z < 0.6:
             continue
-        # menos furos na frente baixa (próximo do arco)
         if x > 0.6 and z < 0.5:
             continue
 
@@ -432,41 +508,22 @@ def _vent_cylinders(outer_dims, n_holes, radius):
         direction = np.array([x, y, z])
         direction = direction / np.linalg.norm(direction)
 
-        # Slot oval (capsule) orientado tangencialmente — padrão Sprout3D.
-        # Comprimento do slot = 2.5x raio para ficar oval visível.
-        slot_length = radius * 2.5
-        cap = trimesh.creation.capsule(
-            radius=radius, height=slot_length, count=[10, 10],
-        )
-        # Capsule está alinhada em Z (eixo); precisamos rotacionar para que:
-        # - o eixo "comprido" do slot fique tangencial à superfície do crânio
-        # - o eixo "fino" (raio) seja radial (perfurando a casca)
-        # Solução: girar 90° em torno do eixo X→ alinha capsule com Y → fica
-        # tangencial. Depois penetra pela casca via offset de altura ~max_r.
-        R_horiz = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
-        cap.apply_transform(R_horiz)
-        # Agora capsule comprido em Y. Estende profundidade fazendo height
-        # virtual via "espera" — para perfurar a casca, recorremos a um cilindro
-        # de penetração separado unido ao slot
-        bore = trimesh.creation.cylinder(radius=radius, height=max_r, sections=16)
-        slot_cutter = union([cap, bore])
-
-        # Alinhar o eixo de penetração (Z do bore) com a normal radial
+        cyl = trimesh.creation.cylinder(radius=radius, height=max_r, sections=16)
         z_axis = np.array([0, 0, 1])
-        if not np.allclose(direction, z_axis):
-            rot_axis = np.cross(z_axis, direction)
-            rot_norm = np.linalg.norm(rot_axis)
-            if rot_norm > 1e-9:
-                angle = np.arccos(np.clip(np.dot(z_axis, direction), -1, 1))
-                R = trimesh.transformations.rotation_matrix(angle, rot_axis / rot_norm)
-                slot_cutter.apply_transform(R)
-        slot_cutter.apply_translation(center)
-        cylinders.append(slot_cutter)
+        rot_axis = np.cross(z_axis, direction)
+        rot_norm = np.linalg.norm(rot_axis)
+        if rot_norm > 1e-9:
+            angle = np.arccos(np.clip(np.dot(z_axis, direction), -1, 1))
+            R = trimesh.transformations.rotation_matrix(angle, rot_axis / rot_norm)
+            cyl.apply_transform(R)
+        cyl.apply_translation(center)
+        cutters.append(cyl)
+        placed += 1
 
-        if len(cylinders) >= n_holes:
+        if placed >= remaining:
             break
 
-    return cylinders
+    return cutters
 
 
 # ---------------------------------------------------------------------------
