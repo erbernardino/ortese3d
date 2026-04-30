@@ -24,10 +24,11 @@ firebase projects:create criaortese3d-prod   # ou nome do seu projeto
 
 No Firebase Console (https://console.firebase.google.com):
 1. **Authentication** → habilitar provider **Email/Senha**.
-2. **Firestore** → criar database. **IMPORTANTE**: escolha
-   `southamerica-east1` para LGPD compliance com dados de saúde
-   (não `nam5`).
-3. **Storage** → criar bucket na mesma região.
+2. **Firestore** → criar database. Em piloto/estudo com
+   consentimento, qualquer região serve (no projeto atual está
+   em `nam5`). Para uso clínico amplo no Brasil, considerar
+   `southamerica-east1`.
+3. **Storage** → criar bucket.
 
 Atualize `.firebaserc` e `firebase.json` (campo `firestore.location`)
 com o ID do projeto e a região.
@@ -91,12 +92,14 @@ gcloud projects add-iam-policy-binding <PROJECT_ID> \
 
 ## 5. CORS no bucket Storage
 
-Para downloads via SDK (`getBytes`) funcionarem do browser:
+Para downloads via SDK (`getBytes`) funcionarem do browser. Em
+desenvolvimento usamos `*` (qualquer origem); em piloto público
+restrinja para os domínios específicos.
 
 ```bash
 cat > /tmp/cors.json <<EOF
 [{
-  "origin": ["http://localhost:5173", "https://seu-dominio.com.br"],
+  "origin": ["*"],
   "method": ["GET","POST","PUT","DELETE","HEAD"],
   "maxAgeSeconds": 3600,
   "responseHeader": ["Content-Type","Authorization","x-goog-resumable"]

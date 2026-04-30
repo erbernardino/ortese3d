@@ -74,8 +74,8 @@ medem; ortesistas modelam, validam e exportam para fabricação.
   `firestore.get()` autoriza leitura/escrita só por createdBy ou
   assignedTo do caso. Requer `roles/datastore.viewer` no
   Firebase Storage Service Agent.
-- **CORS** do bucket configurado pra `localhost:5173`
-  (atualizar para o domínio de produção quando definir).
+- **CORS** do bucket aberto a `*` (modo desenvolvimento). Endurecer
+  para domínios específicos quando empacotar para piloto público.
 - **Cache offline (electron-store)**: read-through/write-through em
   `caseService`. Operações offline geram tempIds e entram em fila
   `pendingOps`.
@@ -110,17 +110,16 @@ medem; ortesistas modelam, validam e exportam para fabricação.
 
 ## Limitações conhecidas e pós-v1
 
-- **Region nam5 (US)**: o database Firestore foi criado em
-  `nam5` (multi-region US), divergindo da intenção
-  `southamerica-east1`. Para LGPD com dados de menores, recomendado
-  migrar (cria novo projeto + export/import) ou aceitar formalmente
-  via DPA Google.
+- **Region nam5 (US)**: o database Firestore está em `nam5`
+  (multi-region US). Para o piloto atual (estudo com consentimento
+  formal dos participantes) isso é aceitável; em uso clínico amplo
+  reavaliar a região.
 - **Espessura próximo a furos**: ray casting usa percentil 5 para
   evitar falso positivo nas bordas dos cilindros de ventilação. Se
   malhas muito complexas exibirem ainda artefatos, usar voxelization
   + libigl seria mais robusto (não escopado).
-- **CORS Storage** restrito a localhost — atualizar para domínio de
-  produção quando definir.
+- **CORS Storage** aberto a `*` (modo dev/estudo); endurecer
+  quando for ao piloto público.
 - **IA é heurística** (não ML treinado). Para evolução: dataset de
   scans pré e pós-tratamento + segmentação CNN para sugestões mais
   específicas por geometria local.

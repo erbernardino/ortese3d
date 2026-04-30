@@ -77,6 +77,7 @@ export default function EditorPage() {
         diagnosis: caseData.patientDiagnosis || '',
       })
       setSuggestion(result)
+      viewerRef.current?.setSuggestionZones(result.zones)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -222,7 +223,12 @@ export default function EditorPage() {
               cursor: suggesting ? 'wait' : 'pointer' }}>
             {suggesting ? 'Analisando...' : '🧠 Sugerir Zonas (IA)'}
           </button>
-          {suggestion && <ZoneSuggestion s={suggestion} onClose={() => setSuggestion(null)} />}
+          {suggestion && (
+            <ZoneSuggestion s={suggestion} onClose={() => {
+              setSuggestion(null)
+              viewerRef.current?.setSuggestionZones(null)
+            }} />
+          )}
         </div>
 
         {currentStl && (

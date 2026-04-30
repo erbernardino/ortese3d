@@ -47,6 +47,49 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       if (controls) controls.enabled = !active
     },
 
+    setSuggestionZones(zones) {
+      const { scene, mesh, suggestionGroup } = stateRef.current
+      if (suggestionGroup) {
+        scene.remove(suggestionGroup)
+        suggestionGroup.traverse(o => {
+          if (o.geometry) o.geometry.dispose()
+          if (o.material) o.material.dispose()
+        })
+      }
+      if (!zones || !zones.length || !mesh) {
+        stateRef.current.suggestionGroup = null
+        return
+      }
+
+      const COLORS = { pressure: 0xfc8181, relief: 0x63b3ed, neutral: 0xa0aec0 }
+      const group = new THREE.Group()
+      const bbox = new THREE.Box3().setFromObject(mesh)
+      const size = new THREE.Vector3()
+      bbox.getSize(size)
+      const half = size.clone().multiplyScalar(0.5)
+      const center = new THREE.Vector3()
+      bbox.getCenter(center)
+
+      for (const z of zones) {
+        const pos = new THREE.Vector3(
+          center.x + z.position.x * half.x,
+          center.y + z.position.y * half.y,
+          center.z + z.position.z * half.z,
+        )
+        const sphereGeo = new THREE.SphereGeometry(z.radius_mm * 0.6, 16, 12)
+        const color = COLORS[z.type] ?? 0xffffff
+        const mat = new THREE.MeshStandardMaterial({
+          color, transparent: true, opacity: 0.55,
+          emissive: color, emissiveIntensity: 0.25 * (z.intensity ?? 1),
+        })
+        const m = new THREE.Mesh(sphereGeo, mat)
+        m.position.copy(pos)
+        group.add(m)
+      }
+      scene.add(group)
+      stateRef.current.suggestionGroup = group
+    },
+
     exportStlBase64() {
       const { mesh } = stateRef.current
       if (!mesh) return null
