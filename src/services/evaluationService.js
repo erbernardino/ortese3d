@@ -1,5 +1,6 @@
 import { collection, doc, addDoc, getDocs, query, orderBy, serverTimestamp } from 'firebase/firestore'
 import { db } from '../firebase'
+import { analyticsService } from './analyticsService'
 
 function evalCol(caseId) {
   return collection(db, 'cases', caseId, 'evaluations')
@@ -20,6 +21,10 @@ export const evaluationService = {
       notes: data.notes || '',
       createdBy,
       createdAt: serverTimestamp(),
+    })
+    analyticsService.track('evaluation_added', {
+      case_id: caseId,
+      cvai: Number(data.cvai) || null,
     })
     return ref.id
   },

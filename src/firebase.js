@@ -3,6 +3,7 @@ import { getAuth } from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
 import { getStorage } from 'firebase/storage'
 import { getFunctions } from 'firebase/functions'
+import { getAnalytics, isSupported } from 'firebase/analytics'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -28,3 +29,9 @@ export const auth = getAuth(app)
 export const db = getFirestore(app)
 export const storage = getStorage(app)
 export const functions = getFunctions(app, 'us-central1')
+
+// Analytics: assíncrono e tolerante (Electron file:// e SSR retornam não-suportado).
+export let analytics = null
+isSupported()
+  .then(ok => { if (ok) analytics = getAnalytics(app) })
+  .catch(() => {})

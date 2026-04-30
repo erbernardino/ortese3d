@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useCase } from '../hooks/useCase'
 import { ValidationChecklist } from '../components/ValidationChecklist'
 import { storageService } from '../services/storageService'
+import { analyticsService } from '../services/analyticsService'
 
 const PYTHON_BASE = 'http://localhost:8765'
 
@@ -36,7 +37,14 @@ export default function ValidationPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stl_b64: stlB64 }),
       })
-      setResult(await res.json())
+      const r = await res.json()
+      setResult(r)
+      analyticsService.track('validation_run', {
+        is_valid: r.is_valid,
+        weight_g: r.weight_g,
+        volume_cm3: r.volume_cm3,
+        errors: r.errors?.length ?? 0,
+      })
     } catch (e) {
       setError(e.message)
     } finally {
@@ -60,6 +68,11 @@ export default function ValidationPage() {
       a.download = filename
       a.click()
       URL.revokeObjectURL(url)
+      analyticsService.track('export_completed', {
+        format: filename.split('.').pop(),
+        filename,
+        size_kb: Math.round(blob.size / 1024),
+      })
     } catch (e) {
       setError(e.message)
     } finally {

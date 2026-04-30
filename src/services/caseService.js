@@ -3,6 +3,7 @@ import { collection, doc, addDoc, updateDoc, getDoc,
 import { httpsCallable } from 'firebase/functions'
 import { db, functions } from '../firebase'
 import { cacheService } from './cacheService'
+import { analyticsService } from './analyticsService'
 
 const TEMP_PREFIX = 'tmp-'
 let tmpCounter = 0
@@ -37,6 +38,7 @@ export const caseService = {
       const id = tempId()
       await cacheService.setCase(id, { id, ...payload, _pending: true })
       await cacheService.enqueueOp({ type: 'create', tempId: id, payload })
+      analyticsService.track('case_created', { offline: true })
       return id
     }
     const ref = await addDoc(collection(db, 'cases'), {
@@ -45,6 +47,7 @@ export const caseService = {
       updatedAt: serverTimestamp(),
     })
     await cacheService.setCase(ref.id, { id: ref.id, ...payload })
+    analyticsService.track('case_created', { offline: false })
     return ref.id
   },
 
@@ -82,6 +85,7 @@ export const caseService = {
   },
 
   async assign(caseId, orthotistUid) {
+    analyticsService.track('case_assigned', { case_id: caseId })
     return this.update(caseId, { assignedTo: orthotistUid, status: 'sent' })
   },
 

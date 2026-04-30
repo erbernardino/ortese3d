@@ -7,6 +7,7 @@ import { useModelHistory } from '../hooks/useModelHistory'
 import { pythonApi } from '../services/pythonApi'
 import { storageService } from '../services/storageService'
 import { caseService } from '../services/caseService'
+import { analyticsService } from '../services/analyticsService'
 
 export default function EditorPage() {
   const { caseId } = useParams()
@@ -39,7 +40,14 @@ export default function EditorPage() {
 
   function commitSculpt() {
     const stlB64 = viewerRef.current?.exportStlBase64()
-    if (stlB64) push(stlB64)
+    if (stlB64) {
+      push(stlB64)
+      analyticsService.track('sculpt_stroke', {
+        mode: sculptMode,
+        radius: sculptRadius,
+        strength: sculptStrength,
+      })
+    }
   }
 
   async function importScan(e) {
@@ -60,6 +68,10 @@ export default function EditorPage() {
         volume_cm3: 0,
       })
       setIsScanRaw(true)
+      analyticsService.track('scan_imported', {
+        vertex_count: result.vertex_count,
+        file_size_kb: Math.round(file.size / 1024),
+      })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -78,6 +90,12 @@ export default function EditorPage() {
       })
       setSuggestion(result)
       viewerRef.current?.setSuggestionZones(result.zones)
+      analyticsService.track('zones_suggested', {
+        cvai: result.cvai,
+        severity: result.severity,
+        affected_side: result.affected_side ?? 'unknown',
+        zone_count: result.zones.length,
+      })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -99,6 +117,11 @@ export default function EditorPage() {
       push(result.stl_b64)
       setModelMeta(result)
       setIsScanRaw(false)
+      analyticsService.track('model_generated', {
+        source: 'scan',
+        wall_mm: thickness,
+        volume_cm3: result.volume_cm3,
+      })
     } catch (err) {
       setError(err.message)
     } finally {
@@ -125,6 +148,11 @@ export default function EditorPage() {
       viewerRef.current?.loadStlBase64(result.stl_b64)
       push(result.stl_b64)
       setModelMeta(result)
+      analyticsService.track('model_generated', {
+        source: 'parametric',
+        wall_mm: thickness,
+        volume_cm3: result.volume_cm3,
+      })
     } catch (e) {
       setError(e.message)
     } finally {
@@ -231,6 +259,10 @@ export default function EditorPage() {
                 viewerRef.current?.setSuggestionZones(null)
                 const stl = viewerRef.current?.exportStlBase64()
                 if (stl) push(stl)
+                analyticsService.track('zones_applied', {
+                  zone_count: suggestion.zones.length,
+                  severity: suggestion.severity,
+                })
                 setSuggestion(null)
               }}
               onClose={() => {
