@@ -1,15 +1,26 @@
 import { collection, doc, addDoc, updateDoc, getDoc,
          getDocs, query, where, serverTimestamp, onSnapshot } from 'firebase/firestore'
-import { db } from '../firebase'
+import { httpsCallable } from 'firebase/functions'
+import { db, functions } from '../firebase'
 
 export const caseService = {
-  async create(patientId, createdBy) {
+  async create(patient, createdBy) {
     const ref = await addDoc(collection(db, 'cases'), {
-      patientId,
+      patientId: patient.id,
+      patientName: patient.name,
+      patientDiagnosis: patient.diagnosis,
+      patientBirthDate: patient.birthDate,
       createdBy,
       assignedTo: null,
       status: 'draft',
-      measurements: {},
+      measurements: {
+        circOccipital: patient.circOccipital,
+        circFrontal: patient.circFrontal,
+        diagA: patient.diagA,
+        diagB: patient.diagB,
+        cvai: patient.cvai,
+        height: patient.height,
+      },
       scanFileUrl: null,
       modelFileUrl: null,
       reportUrl: null,
@@ -51,5 +62,11 @@ export const caseService = {
     const q = query(collection(db, 'cases'), where(field, '==', userId))
     const snap = await getDocs(q)
     return snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  },
+
+  async resolveUidByEmail(email) {
+    const fn = httpsCallable(functions, 'resolveUidByEmail')
+    const { data } = await fn({ email })
+    return data.uid
   },
 }

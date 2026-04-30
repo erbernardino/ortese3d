@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app'
 import { getAuth } from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
 import { getStorage } from 'firebase/storage'
+import { getFunctions } from 'firebase/functions'
 
 const firebaseConfig = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
@@ -12,8 +13,18 @@ const firebaseConfig = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID,
 }
 
+const missingKeys = Object.entries(firebaseConfig)
+  .filter(([, v]) => !v)
+  .map(([k]) => k)
+if (missingKeys.length) {
+  const msg = `Configuração Firebase ausente: ${missingKeys.join(', ')}. Crie um .env.local com as variáveis VITE_FIREBASE_*.`
+  document.body.innerHTML = `<pre style="padding:24px;color:#c53030;font-family:monospace;white-space:pre-wrap">${msg}</pre>`
+  throw new Error(msg)
+}
+
 const app = initializeApp(firebaseConfig)
 
 export const auth = getAuth(app)
 export const db = getFirestore(app)
 export const storage = getStorage(app)
+export const functions = getFunctions(app, 'us-central1')

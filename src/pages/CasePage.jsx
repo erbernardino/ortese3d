@@ -24,16 +24,20 @@ export default function CasePage() {
     if (caseId) return
     const patientId = searchParams.get('patientId')
     if (!patientId || !user) return
-    caseService.create(patientId, user.uid).then(newCaseId => {
-      setCurrentCaseId(newCaseId)
+    patientService.get(patientId).then(p => {
+      if (!p) return
+      caseService.create(p, user.uid).then(setCurrentCaseId)
     })
   }, [user])
 
   useEffect(() => {
-    if (caseData?.patientId) {
+    if (caseData?.patientId && user?.role === 'doctor') {
       patientService.get(caseData.patientId).then(setPatient)
     }
-  }, [caseData?.patientId])
+  }, [caseData?.patientId, user?.role])
+
+  const patientName = caseData?.patientName ?? patient?.name
+  const patientDiagnosis = caseData?.patientDiagnosis ?? patient?.diagnosis
 
   if (loading || !currentCaseId) return <div style={{ padding: 40 }}>Carregando caso...</div>
 
@@ -43,9 +47,9 @@ export default function CasePage() {
         style={{ marginBottom: 16, background: 'none', border: 'none', color: '#63b3ed', cursor: 'pointer' }}>
         ← Voltar ao dashboard
       </button>
-      <h2>Caso — {patient?.name ?? '...'}</h2>
+      <h2>Caso — {patientName ?? '...'}</h2>
       <p>Status: <strong>{STATUS_LABEL[caseData?.status] ?? caseData?.status}</strong></p>
-      <p>Diagnóstico: {patient?.diagnosis}</p>
+      <p>Diagnóstico: {patientDiagnosis}</p>
 
       {user?.role === 'doctor' && caseData?.status === 'draft' && (
         <div style={{ marginTop: 24 }}>
@@ -54,7 +58,7 @@ export default function CasePage() {
             style={{ marginRight: 12 }}>
             ✏️ Editar modelo 3D
           </button>
-          <AssignToOrthotist caseId={currentCaseId} patientName={patient?.name} />
+          <AssignToOrthotist caseId={currentCaseId} patientName={patientName} />
         </div>
       )}
 
@@ -77,21 +81,24 @@ function AssignToOrthotist({ caseId, patientName }) {
   const [email, setEmail] = useState('')
   const [sending, setSending] = useState(false)
   const [sent, setSent] = useState(false)
+  const [error, setError] = useState('')
 
   async function assign() {
     if (!email.trim()) return
     setSending(true)
+    setError('')
     try {
-      // For now assign by email as orthotistUid placeholder
-      // In production, look up UID by email via a cloud function or Firestore index
-      await caseService.assign(caseId, email.trim())
+      const uid = await caseService.resolveUidByEmail(email.trim())
+      await caseService.assign(caseId, uid)
       await notificationService.send(
-        email.trim(),
+        uid,
         'Novo caso recebido',
         `Caso de ${patientName ?? 'paciente'} enviado para revisão.`,
         caseId,
       )
       setSent(true)
+    } catch (err) {
+      setError(err.message || 'Erro ao atribuir ortesista')
     } finally {
       setSending(false)
     }
@@ -100,16 +107,19 @@ function AssignToOrthotist({ caseId, patientName }) {
   if (sent) return <p style={{ color: '#48c78e', marginTop: 12 }}>✅ Caso enviado para o ortesista.</p>
 
   return (
-    <div style={{ marginTop: 16, display: 'flex', gap: 8, alignItems: 'center' }}>
-      <input
-        placeholder="E-mail ou UID do ortesista"
-        value={email}
-        onChange={e => setEmail(e.target.value)}
-        style={{ flex: 1, padding: '8px 12px' }}
-      />
-      <button onClick={assign} disabled={sending}>
-        {sending ? 'Enviando...' : '📤 Enviar'}
-      </button>
+    <div style={{ marginTop: 16 }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input
+          placeholder="E-mail do ortesista"
+          value={email}
+          onChange={e => setEmail(e.target.value)}
+          style={{ flex: 1, padding: '8px 12px' }}
+        />
+        <button onClick={assign} disabled={sending}>
+          {sending ? 'Enviando...' : '📤 Enviar'}
+        </button>
+      </div>
+      {error && <p style={{ color: '#e53e3e', marginTop: 8, fontSize: 13 }}>{error}</p>}
     </div>
   )
 }
