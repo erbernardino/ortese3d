@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { onAuthStateChanged, signInWithEmailAndPassword,
-         createUserWithEmailAndPassword, signOut } from 'firebase/auth'
+         createUserWithEmailAndPassword, signOut,
+         sendPasswordResetEmail } from 'firebase/auth'
 import { doc, setDoc, getDoc } from 'firebase/firestore'
 import { auth, db } from '../firebase'
 
@@ -28,5 +29,9 @@ export function useAuth() {
     await signOut(auth)
   }
 
-  return { user, register, login, logout }
+  async function resetPassword(email) {
+    await sendPasswordResetEmail(auth, email)
+  }
+
+  return { user, register, login, logout, resetPassword }
 }
