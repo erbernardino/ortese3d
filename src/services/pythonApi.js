@@ -17,4 +17,15 @@ export const pythonApi = {
   exportStl: (data) => request('POST', '/export/stl', data),
   exportGcode: (data) => request('POST', '/export/gcode', data),
   exportPdf: (data) => request('POST', '/export/pdf', data),
+
+  async importScan(file) {
+    const form = new FormData()
+    form.append('file', file)
+    const res = await fetch(`${BASE}/model/import-scan`, { method: 'POST', body: form })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`Import scan failed: ${res.status} ${detail}`)
+    }
+    return res.json()
+  },
 }

@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import { caseService } from '../services/caseService'
-import { patientService } from '../services/patientService'
 import { notificationService } from '../services/notificationService'
 
 const STATUS_LABEL = {
@@ -14,7 +13,6 @@ export default function DashboardPage() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
   const [cases, setCases] = useState([])
-  const [patients, setPatients] = useState({})
   const [notifications, setNotifications] = useState([])
 
   useEffect(() => {
@@ -24,14 +22,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!user) return
-    caseService.listForUser(user.uid, user.role).then(async (list) => {
-      setCases(list)
-      const ids = [...new Set(list.map(c => c.patientId))]
-      const pats = await Promise.all(ids.map(id => patientService.get(id)))
-      const map = {}
-      pats.forEach(p => { if (p) map[p.id] = p })
-      setPatients(map)
-    })
+    caseService.listForUser(user.uid, user.role).then(setCases)
   }, [user])
 
   const active = cases.filter(c => !['approved', 'exported'].includes(c.status))
@@ -80,7 +71,7 @@ export default function DashboardPage() {
               marginBottom: 8, display: 'flex', justifyContent: 'space-between',
               alignItems: 'center',
             }}>
-            <strong>{patients[c.patientId]?.name ?? '...'}</strong>
+            <strong>{c.patientName ?? '...'}</strong>
             <span style={{ fontSize: 13, color: '#666' }}>{STATUS_LABEL[c.status]}</span>
           </li>
         ))}

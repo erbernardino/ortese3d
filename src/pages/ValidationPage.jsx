@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useCase } from '../hooks/useCase'
 import { ValidationChecklist } from '../components/ValidationChecklist'
+import { storageService } from '../services/storageService'
 
 const PYTHON_BASE = 'http://localhost:8765'
 
@@ -13,8 +14,14 @@ export default function ValidationPage() {
   const [exporting, setExporting] = useState(null)
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
+  const [stlB64, setStlB64] = useState(null)
 
-  const stlB64 = caseData?.modelStlB64 || localStorage.getItem(`stl_${caseId}`)
+  useEffect(() => {
+    if (!caseData?.modelStoragePath) return
+    storageService.downloadStlAsBase64(caseData.modelStoragePath)
+      .then(setStlB64)
+      .catch(e => setError(`Falha ao baixar modelo: ${e.message}`))
+  }, [caseData?.modelStoragePath])
 
   async function validate() {
     if (!stlB64) {
