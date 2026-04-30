@@ -21,19 +21,36 @@ def validate_mesh(
     volume_cm3 = float(abs(mesh.volume) / 1000) if mesh.is_watertight else 0.0
     weight_g = round(volume_cm3 * DENSITY_G_PER_CM3, 1)
 
-    # 3. Minimum thickness estimate (sample surface points)
+    # 3. Minimum thickness via ray casting from sampled surface points
+    min_thickness_found: float | None = None
     if mesh.is_watertight and len(mesh.vertices) > 10:
         try:
-            sample_pts, _ = trimesh.sample.sample_surface(mesh, count=200)
-            prox = trimesh.proximity.ProximityQuery(mesh)
-            _, dists, _ = prox.on_surface(sample_pts)
-            min_found = float(np.min(dists)) * 2
-            if min_found < min_thickness_mm:
-                errors.append(
-                    f"Espessura mínima estimada {min_found:.1f}mm abaixo do limite {min_thickness_mm}mm."
-                )
-        except Exception:
-            warnings.append("Não foi possível verificar espessura mínima.")
+            sample_pts, face_ids = trimesh.sample.sample_surface(mesh, count=300)
+            normals = mesh.face_normals[face_ids]
+            origins = sample_pts + normals * 0.05  # nudge into the wall material
+            locs, ridx, _ = mesh.ray.intersects_location(
+                origins, -normals, multiple_hits=True
+            )
+            local_min = []
+            for i in range(len(sample_pts)):
+                mask = ridx == i
+                if not mask.any():
+                    continue
+                ds = np.linalg.norm(locs[mask] - origins[i], axis=1)
+                ds = ds[ds > 0.1]
+                if len(ds):
+                    local_min.append(float(ds.min()))
+            if local_min:
+                # 5º percentil — robusto contra artefatos em bordas de furos
+                # de ventilação. O mínimo absoluto pode ser falso positivo.
+                arr = np.array(local_min)
+                min_thickness_found = float(np.percentile(arr, 5))
+                if min_thickness_found < min_thickness_mm:
+                    errors.append(
+                        f"Espessura medida (p5) {min_thickness_found:.2f}mm abaixo do limite {min_thickness_mm}mm."
+                    )
+        except Exception as e:
+            warnings.append(f"Não foi possível verificar espessura mínima: {e}")
 
     is_valid = len(errors) == 0
 
@@ -43,4 +60,5 @@ def validate_mesh(
         "warnings": warnings,
         "volume_cm3": round(volume_cm3, 2),
         "weight_g": weight_g,
+        "min_thickness_mm": round(min_thickness_found, 2) if min_thickness_found is not None else None,
     }
