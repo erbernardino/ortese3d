@@ -242,32 +242,63 @@ function PhotoGallery({ series }) {
   )
 }
 
+// Modelo de evolução típica: decaimento exponencial com k≈0.18/mês.
+// Referência: Robinson 2009; Loveday & de Chalain 2001 — redução média
+// ~70% do CVAI inicial em 12 semanas de uso adequado (22h/dia).
+const PROJECTION_K = 0.18  // /mês
+const PROJECTION_HORIZON_MONTHS = 6
+
 function CvaiChart({ series }) {
   const points = series
     .filter(e => e.measurements?.cvai != null && e.date)
     .map(e => ({ date: e.date, cvai: Number(e.measurements.cvai) }))
 
-  if (points.length < 2) {
+  if (points.length < 1) {
     return (
       <div style={{ padding: 16, color: '#666', fontSize: 13 }}>
-        Ao menos 2 avaliações com CVAI são necessárias para gerar o gráfico.
+        Sem CVAI registrado.
       </div>
     )
   }
 
-  const W = 700, H = 250, M = { top: 20, right: 20, bottom: 40, left: 40 }
+  // Curva projetada a partir do baseline
+  const baseline = points[0]
+  const baselineMs = new Date(baseline.date).getTime()
+  const monthMs = 30.44 * 86400 * 1000
+  const projection = []
+  for (let m = 0; m <= PROJECTION_HORIZON_MONTHS; m += 0.5) {
+    const t = baselineMs + m * monthMs
+    const cvai = baseline.cvai * Math.exp(-PROJECTION_K * m)
+    projection.push({ t, cvai })
+  }
+
+  // Domínio temporal: estende até o horizonte projetado
   const xs = points.map(p => new Date(p.date).getTime())
+  const xMin = Math.min(baselineMs, ...xs)
+  const xMax = Math.max(
+    baselineMs + PROJECTION_HORIZON_MONTHS * monthMs,
+    ...xs,
+  )
+
+  if (points.length < 2) {
+    // Mesmo com 1 ponto, mostra a projeção como "esperado"
+  }
+
+  const W = 700, H = 250, M = { top: 20, right: 20, bottom: 40, left: 40 }
   const ys = points.map(p => p.cvai)
-  const xMin = Math.min(...xs), xMax = Math.max(...xs)
-  const yMin = 0, yMax = Math.max(8.75, Math.max(...ys) * 1.1)
+  const yMin = 0
+  const yMax = Math.max(8.75, baseline.cvai * 1.15, ...ys.map(v => v * 1.1))
   const xScale = t => M.left + ((t - xMin) / (xMax - xMin || 1)) * (W - M.left - M.right)
   const yScale = v => H - M.bottom - ((v - yMin) / (yMax - yMin)) * (H - M.top - M.bottom)
 
-  const path = points
+  const realPath = points
     .map((p, i) => `${i === 0 ? 'M' : 'L'} ${xScale(new Date(p.date).getTime())} ${yScale(p.cvai)}`)
     .join(' ')
 
-  // Bandas de severidade
+  const projPath = projection
+    .map((p, i) => `${i === 0 ? 'M' : 'L'} ${xScale(p.t)} ${yScale(p.cvai)}`)
+    .join(' ')
+
   const SEV = [
     { from: 0, to: 3.5, color: '#c6f6d5', label: 'leve' },
     { from: 3.5, to: 6.5, color: '#fefcbf', label: 'moderada' },
@@ -275,9 +306,24 @@ function CvaiChart({ series }) {
     { from: 8.75, to: yMax, color: '#fed7d7', label: 'muito grave' },
   ]
 
+  // Mês corrente: marca data de hoje no eixo
+  const today = Date.now()
+  const showToday = today >= xMin && today <= xMax
+
   return (
     <div style={{ marginTop: 24, background: 'white', padding: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}>
-      <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: 14 }}>Evolução do CVAI</h3>
+      <div style={{ display: 'flex', justifyContent: 'space-between',
+        alignItems: 'center', marginBottom: 8 }}>
+        <h3 style={{ margin: 0, fontSize: 14 }}>Evolução do CVAI</h3>
+        <div style={{ fontSize: 11, display: 'flex', gap: 12, color: '#4a5568' }}>
+          <span><span style={{
+            display: 'inline-block', width: 14, height: 2, background: '#3182ce',
+            verticalAlign: 'middle', marginRight: 4 }}/>Medido</span>
+          <span><span style={{
+            display: 'inline-block', width: 14, height: 0, borderTop: '2px dashed #a0aec0',
+            verticalAlign: 'middle', marginRight: 4 }}/>Projetado (Robinson 2009)</span>
+        </div>
+      </div>
       <svg width={W} height={H} style={{ maxWidth: '100%' }}>
         {SEV.map(b => b.from < yMax && (
           <rect key={b.label}
@@ -286,7 +332,10 @@ function CvaiChart({ series }) {
             height={yScale(b.from) - yScale(Math.min(b.to, yMax))}
             fill={b.color} opacity="0.4" />
         ))}
-        <path d={path} stroke="#3182ce" strokeWidth="2" fill="none" />
+        {/* curva projetada (tracejada) */}
+        <path d={projPath} stroke="#a0aec0" strokeWidth="1.5" strokeDasharray="6 4" fill="none" />
+        {/* curva medida (sólida) */}
+        <path d={realPath} stroke="#3182ce" strokeWidth="2.5" fill="none" />
         {points.map(p => (
           <g key={p.date}>
             <circle cx={xScale(new Date(p.date).getTime())} cy={yScale(p.cvai)} r="4" fill="#3182ce" />
@@ -294,14 +343,23 @@ function CvaiChart({ series }) {
               fontSize="11" fill="#2d3748" textAnchor="middle">{p.cvai}%</text>
           </g>
         ))}
+        {showToday && (
+          <line x1={xScale(today)} x2={xScale(today)} y1={M.top} y2={H - M.bottom}
+            stroke="#9f7aea" strokeWidth="1" strokeDasharray="2 4" />
+        )}
         <line x1={M.left} x2={W - M.right} y1={H - M.bottom} y2={H - M.bottom} stroke="#cbd5e0" />
         <line x1={M.left} x2={M.left} y1={M.top} y2={H - M.bottom} stroke="#cbd5e0" />
-        {points.map(p => (
-          <text key={p.date}
-            x={xScale(new Date(p.date).getTime())}
-            y={H - M.bottom + 14}
-            fontSize="10" fill="#666" textAnchor="middle">{p.date.slice(5)}</text>
-        ))}
+        {/* labels mensais */}
+        {Array.from({ length: PROJECTION_HORIZON_MONTHS + 1 }, (_, m) => {
+          const t = baselineMs + m * monthMs
+          if (t > xMax) return null
+          return (
+            <text key={m} x={xScale(t)} y={H - M.bottom + 14}
+              fontSize="10" fill="#666" textAnchor="middle">
+              {m === 0 ? 'baseline' : `+${m}m`}
+            </text>
+          )
+        })}
       </svg>
     </div>
   )
