@@ -84,6 +84,52 @@ def _vent_cylinders(outer_dims, n_holes, radius):
     return cylinders
 
 
+def generate_from_scan(
+    scan_mesh: trimesh.Trimesh,
+    offset_mm: float = 4.0,
+    wall_mm: float = 3.0,
+    vent_holes: int = 12,
+    vent_radius_mm: float = 4.0,
+    frontal_opening: bool = True,
+) -> trimesh.Trimesh:
+    """
+    Constrói capacete a partir de um scan 3D da cabeça.
+    A superfície do scan vira a face interna do capacete (com folga
+    `offset`); espessura de parede `wall`. Adiciona ventilação e
+    abertura frontal opcionais.
+
+    Estratégia: deslocar cada vértice ao longo da normal por
+    (offset+wall) → outer; por offset → inner; subtrair via boolean.
+    """
+    if not scan_mesh.is_watertight:
+        trimesh.repair.fill_holes(scan_mesh)
+
+    scan_mesh.fix_normals()
+    normals = scan_mesh.vertex_normals
+
+    outer = scan_mesh.copy()
+    outer.vertices = scan_mesh.vertices + normals * (offset_mm + wall_mm)
+    outer.fix_normals()
+
+    inner = scan_mesh.copy()
+    inner.vertices = scan_mesh.vertices + normals * offset_mm
+    inner.fix_normals()
+
+    helmet = difference([outer, inner])
+
+    bounds = scan_mesh.bounding_box.extents
+    outer_dims_for_features = np.array(bounds) / 2 + offset_mm + wall_mm
+
+    if vent_holes > 0:
+        for cyl in _vent_cylinders(outer_dims_for_features, vent_holes, vent_radius_mm):
+            helmet = difference([helmet, cyl])
+
+    if frontal_opening:
+        helmet = difference([helmet, _frontal_cutter(outer_dims_for_features)])
+
+    return helmet
+
+
 def _frontal_cutter(outer_dims):
     """
     Caixa que remove a porção frontal+inferior (testa do bebê + abertura

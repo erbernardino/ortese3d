@@ -28,4 +28,7 @@ export const pythonApi = {
     }
     return res.json()
   },
+
+  generateFromScan: (data) => request('POST', '/model/generate-from-scan', data),
+  suggestZones: (data) => request('POST', '/model/suggest-zones', data),
 }

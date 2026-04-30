@@ -21,6 +21,10 @@ export default function EditorPage() {
   const { current: currentStl, push, undo, redo, canUndo, canRedo } = useModelHistory(null)
   const [uploading, setUploading] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [convertingScan, setConvertingScan] = useState(false)
+  const [isScanRaw, setIsScanRaw] = useState(false)
+  const [suggesting, setSuggesting] = useState(false)
+  const [suggestion, setSuggestion] = useState(null)
   const fileInputRef = useRef(null)
   const [sculptActive, setSculptActive] = useState(false)
   const [sculptRadius, setSculptRadius] = useState(8)
@@ -55,10 +59,49 @@ export default function EditorPage() {
         is_watertight: true,
         volume_cm3: 0,
       })
+      setIsScanRaw(true)
     } catch (err) {
       setError(err.message)
     } finally {
       setImporting(false)
+    }
+  }
+
+  async function suggestZones() {
+    if (!caseData) return
+    setSuggesting(true)
+    setError('')
+    try {
+      const result = await pythonApi.suggestZones({
+        measurements: caseData.measurements || {},
+        diagnosis: caseData.patientDiagnosis || '',
+      })
+      setSuggestion(result)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSuggesting(false)
+    }
+  }
+
+  async function convertScanToHelmet() {
+    if (!modelMeta?.stl_b64) return
+    setConvertingScan(true)
+    setError('')
+    try {
+      const result = await pythonApi.generateFromScan({
+        stl_b64: modelMeta.stl_b64,
+        offset_mm: 4,
+        wall_mm: thickness,
+      })
+      viewerRef.current?.loadStlBase64(result.stl_b64)
+      push(result.stl_b64)
+      setModelMeta(result)
+      setIsScanRaw(false)
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setConvertingScan(false)
     }
   }
 
@@ -134,6 +177,15 @@ export default function EditorPage() {
           {importing ? 'Processando scan...' : '📁 Importar Scan 3D'}
         </button>
 
+        {isScanRaw && (
+          <button onClick={convertScanToHelmet} disabled={convertingScan}
+            style={{ width: '100%', padding: '10px', marginBottom: 8,
+              background: '#4299e1', color: 'white', border: 'none', borderRadius: 6,
+              cursor: convertingScan ? 'wait' : 'pointer' }}>
+            {convertingScan ? 'Construindo capacete...' : '🏗️ Gerar Capacete a partir do Scan'}
+          </button>
+        )}
+
         <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
           <button onClick={handleUndo} disabled={!canUndo}
             style={{ flex: 1, padding: '6px', fontSize: 13, opacity: canUndo ? 1 : 0.4 }}>
@@ -162,6 +214,16 @@ export default function EditorPage() {
           thickness={thickness}
           onThicknessChange={setThickness}
         />
+
+        <div style={{ marginTop: 16 }}>
+          <button onClick={suggestZones} disabled={suggesting}
+            style={{ width: '100%', padding: '10px',
+              background: '#9f7aea', color: 'white', border: 'none', borderRadius: 6,
+              cursor: suggesting ? 'wait' : 'pointer' }}>
+            {suggesting ? 'Analisando...' : '🧠 Sugerir Zonas (IA)'}
+          </button>
+          {suggestion && <ZoneSuggestion s={suggestion} onClose={() => setSuggestion(null)} />}
+        </div>
 
         {currentStl && (
           <div style={{ marginTop: 16, padding: 12, background: 'rgba(255,255,255,0.04)', borderRadius: 8 }}>
@@ -219,6 +281,42 @@ export default function EditorPage() {
             </button>
           </div>
         )}
+      </div>
+    </div>
+  )
+}
+
+function ZoneSuggestion({ s, onClose }) {
+  const SEV_COLOR = { mild: '#48c78e', moderate: '#ecc94b', severe: '#fc8181', very_severe: '#e53e3e' }
+  const TYPE_COLOR = { pressure: '#fc8181', relief: '#63b3ed', neutral: '#a0aec0' }
+  return (
+    <div style={{
+      marginTop: 12, padding: 12, background: 'rgba(159,122,234,0.08)',
+      border: '1px solid rgba(159,122,234,0.4)', borderRadius: 8, fontSize: 12,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+        <strong style={{ color: '#9f7aea' }}>Análise IA · v1 heurística</strong>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: '#999', cursor: 'pointer' }}>✕</button>
+      </div>
+      <div style={{ marginBottom: 8 }}>
+        <span style={{ color: SEV_COLOR[s.severity], fontWeight: 600 }}>CVAI {s.cvai}%</span>
+        {' · '}confiança {Math.round(s.confidence * 100)}%
+      </div>
+      <p style={{ margin: '0 0 8px', opacity: 0.9 }}>{s.summary}</p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {s.zones.map((z, i) => (
+          <div key={i} style={{
+            padding: '6px 8px', borderRadius: 6,
+            background: 'rgba(255,255,255,0.04)',
+            borderLeft: `3px solid ${TYPE_COLOR[z.type]}`,
+          }}>
+            <div style={{ color: TYPE_COLOR[z.type], fontWeight: 600 }}>{z.label}</div>
+            <div style={{ opacity: 0.7, fontSize: 11 }}>
+              raio {z.radius_mm}mm · intensidade {Math.round(z.intensity * 100)}%
+            </div>
+            <div style={{ opacity: 0.6, fontSize: 11, marginTop: 2 }}>{z.rationale}</div>
+          </div>
+        ))}
       </div>
     </div>
   )
