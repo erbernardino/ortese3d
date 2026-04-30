@@ -1,9 +1,12 @@
 from fastapi import APIRouter, HTTPException
 from fastapi import UploadFile, File
 from pydantic import BaseModel
-from python.services.model_generator import generate_from_measurements, generate_from_scan
+from python.services.model_generator import (
+    generate_from_measurements, generate_from_scan, split_into_two_parts,
+)
 from python.services.scan_processor import process_scan
 from python.services.zone_suggester import suggest_zones
+import numpy as np
 import trimesh
 import base64
 import io
@@ -92,6 +95,50 @@ def generate_from_scan_endpoint(data: dict):
             "face_count": len(helmet.faces),
             "is_watertight": helmet.is_watertight,
             "volume_cm3": round(abs(helmet.volume) / 1000, 2),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/split-helmet")
+def split_helmet_endpoint(data: dict):
+    """
+    Recebe stl_b64 do capacete inteiro e devolve duas peças (frontal
+    e traseira) já com conectores macho/fêmea. Resposta:
+      { front_stl_b64, back_stl_b64, pins: [{y, z}], stats: {...} }
+    """
+    stl_b64 = data.get("stl_b64")
+    if not stl_b64:
+        raise HTTPException(status_code=400, detail="stl_b64 é obrigatório")
+    try:
+        raw = base64.b64decode(stl_b64)
+        helmet = trimesh.load(io.BytesIO(raw), file_type="stl")
+        bounds = helmet.bounding_box.extents
+        outer_dims = np.array(bounds) / 2
+
+        result = split_into_two_parts(
+            helmet, outer_dims,
+            pin_count=int(data.get("pin_count", 4)),
+            pin_radius=float(data.get("pin_radius_mm", 2.0)),
+            pin_length=float(data.get("pin_length_mm", 10.0)),
+            pin_clearance=float(data.get("pin_clearance_mm", 0.15)),
+        )
+
+        def to_b64(mesh):
+            buf = io.BytesIO()
+            mesh.export(buf, file_type="stl")
+            return base64.b64encode(buf.getvalue()).decode()
+
+        return {
+            "front_stl_b64": to_b64(result["front"]),
+            "back_stl_b64": to_b64(result["back"]),
+            "pins": [{"y": float(y), "z": float(z)} for (y, z) in result["pins"]],
+            "stats": {
+                "front_volume_cm3": round(abs(result["front"].volume) / 1000, 2),
+                "back_volume_cm3": round(abs(result["back"].volume) / 1000, 2),
+                "front_face_count": len(result["front"].faces),
+                "back_face_count": len(result["back"].faces),
+            },
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -123,6 +123,45 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       stateRef.current.gridHelper = grid
     },
 
+    loadSplitParts(frontB64, backB64) {
+      const { scene, mesh: oldMesh, splitGroup } = stateRef.current
+      if (oldMesh) scene.remove(oldMesh)
+      if (splitGroup) {
+        scene.remove(splitGroup)
+        splitGroup.traverse(o => {
+          if (o.geometry) o.geometry.dispose()
+          if (o.material) o.material.dispose()
+        })
+      }
+      const group = new THREE.Group()
+      const loader = new STLLoader()
+
+      function makeMesh(b64, color) {
+        const raw = atob(b64)
+        const buf = new Uint8Array(raw.length)
+        for (let i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i)
+        const geo = loader.parse(buf.buffer)
+        geo.computeVertexNormals()
+        const mat = new THREE.MeshStandardMaterial({
+          color, roughness: 0.4, metalness: 0.1,
+        })
+        return new THREE.Mesh(geo, mat)
+      }
+
+      const front = makeMesh(frontB64, 0x88ccff)  // azul
+      const back = makeMesh(backB64, 0xfbbf24)    // âmbar
+
+      group.add(front, back)
+      // Centra o grupo
+      const bbox = new THREE.Box3().setFromObject(group)
+      const center = new THREE.Vector3()
+      bbox.getCenter(center)
+      group.position.sub(center)
+      scene.add(group)
+      stateRef.current.splitGroup = group
+      stateRef.current.mesh = front     // sculpt/raycast usa a peça frontal por padrão
+    },
+
     setOverlayStl(stlB64) {
       const { scene, overlayMesh } = stateRef.current
       if (overlayMesh) {

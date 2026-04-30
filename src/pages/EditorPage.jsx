@@ -31,6 +31,8 @@ export default function EditorPage() {
   const [showScanOverlay, setShowScanOverlay] = useState(false)
   const [showGrid, setShowGrid] = useState(false)
   const [hoverInfo, setHoverInfo] = useState(null)
+  const [splitting, setSplitting] = useState(false)
+  const [splitParts, setSplitParts] = useState(null)
   const fileInputRef = useRef(null)
   const [sculptActive, setSculptActive] = useState(false)
   const [sculptRadius, setSculptRadius] = useState(8)
@@ -97,6 +99,32 @@ export default function EditorPage() {
     } catch (e) {
       setError(`Falha ao carregar variante: ${e.message}`)
     }
+  }
+
+  async function splitHelmet() {
+    if (!currentStl) return
+    setSplitting(true)
+    setError('')
+    try {
+      const result = await pythonApi.splitHelmet({ stl_b64: currentStl })
+      setSplitParts(result)
+      viewerRef.current?.loadSplitParts(result.front_stl_b64, result.back_stl_b64)
+    } catch (e) {
+      setError(`Falha ao dividir capacete: ${e.message}`)
+    } finally {
+      setSplitting(false)
+    }
+  }
+
+  function downloadSplitPart(b64, filename) {
+    const bin = atob(b64)
+    const arr = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i)
+    const blob = new Blob([arr], { type: 'application/sla' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = filename; a.click()
+    URL.revokeObjectURL(url)
   }
 
   function toggleGrid() {
@@ -414,6 +442,37 @@ export default function EditorPage() {
           </button>
 
           <VariantsList list={caseData?.variants ?? []} onLoad={loadVariant} />
+
+          <button onClick={splitHelmet} disabled={!currentStl || splitting}
+            style={{ marginTop: 8, width: '100%', padding: '8px',
+              background: '#ed8936', color: 'white', border: 'none',
+              borderRadius: 6, cursor: currentStl ? 'pointer' : 'not-allowed',
+              fontSize: 12, fontWeight: 600 }}>
+            {splitting ? 'Dividindo...' : '✂️ Dividir em 2 peças (frente/trás)'}
+          </button>
+
+          {splitParts && (
+            <div style={{ marginTop: 8, padding: 10,
+              background: 'rgba(237,137,54,0.08)', borderRadius: 6,
+              border: '1px solid rgba(237,137,54,0.25)' }}>
+              <div style={{ fontSize: 11, opacity: 0.7, marginBottom: 6,
+                textTransform: 'uppercase' }}>Peças geradas</div>
+              <button onClick={() => downloadSplitPart(splitParts.front_stl_b64, 'capacete-frontal.stl')}
+                style={{ display: 'block', width: '100%', padding: '6px',
+                  marginBottom: 4, background: 'rgba(136,204,255,0.15)',
+                  color: '#88ccff', border: '1px solid rgba(136,204,255,0.3)',
+                  borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                ⬇ Frontal · {splitParts.stats.front_volume_cm3} cm³ · pinos
+              </button>
+              <button onClick={() => downloadSplitPart(splitParts.back_stl_b64, 'capacete-traseira.stl')}
+                style={{ display: 'block', width: '100%', padding: '6px',
+                  background: 'rgba(251,191,36,0.15)',
+                  color: '#fbbf24', border: '1px solid rgba(251,191,36,0.3)',
+                  borderRadius: 4, cursor: 'pointer', fontSize: 12 }}>
+                ⬇ Traseira · {splitParts.stats.back_volume_cm3} cm³ · furos
+              </button>
+            </div>
+          )}
 
           {suggestion && (
             <ZoneSuggestion

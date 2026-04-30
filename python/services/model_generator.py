@@ -159,6 +159,66 @@ def _skull_shape(ax, ay, az, subdivisions=4) -> trimesh.Trimesh:
 # Aberturas (A)
 # ---------------------------------------------------------------------------
 
+def split_into_two_parts(
+    helmet: trimesh.Trimesh,
+    outer_dims,
+    pin_count: int = 4,
+    pin_radius: float = 2.0,
+    pin_length: float = 10.0,
+    pin_clearance: float = 0.15,
+):
+    """
+    Divide o capacete em duas peças (frontal e traseira) por um plano
+    coronal (YZ em x=0) e adiciona conectores macho/fêmea ao redor
+    da borda de corte.
+
+    A peça frontal recebe os pinos cilíndricos (macho); a peça traseira
+    recebe os furos correspondentes (fêmea com folga `pin_clearance`).
+    Retorna {"front": mesh, "back": mesh, "pins": [(y, z), ...]}.
+    """
+    ax, ay, az = outer_dims
+
+    # Caixas que removem a metade contralateral
+    back_remover = trimesh.creation.box(extents=(ax * 4, ay * 4, az * 4))
+    back_remover.apply_translation([-ax * 2 - 0.001, 0, 0])
+
+    front_remover = trimesh.creation.box(extents=(ax * 4, ay * 4, az * 4))
+    front_remover.apply_translation([ax * 2 + 0.001, 0, 0])
+
+    front_part = difference([helmet, back_remover])
+    back_part = difference([helmet, front_remover])
+
+    # Distribui pinos pela borda do corte (no plano YZ)
+    # 1 no topo, 2 laterais ao nível do meio, 1 atrás se >=4
+    pin_layout = []
+    pin_layout.append((0, az * 0.85))        # topo central
+    pin_layout.append((+ay * 0.85, 0.0))     # lateral direita
+    pin_layout.append((-ay * 0.85, 0.0))     # lateral esquerda
+    if pin_count >= 4:
+        pin_layout.append((0, -az * 0.50))   # base central (frente da abertura)
+    pin_layout = pin_layout[:pin_count]
+
+    R_x = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+    for (y, z) in pin_layout:
+        # Pino macho sólido, eixo X
+        pin = trimesh.creation.cylinder(radius=pin_radius, height=pin_length, sections=16)
+        pin.apply_transform(R_x)
+        pin.apply_translation([0, y, z])
+        front_part = union([front_part, pin])
+
+        # Furo correspondente com folga
+        hole = trimesh.creation.cylinder(
+            radius=pin_radius + pin_clearance,
+            height=pin_length * 1.4,
+            sections=16,
+        )
+        hole.apply_transform(R_x)
+        hole.apply_translation([-pin_length * 0.05, y, z])
+        back_part = difference([back_part, hole])
+
+    return {"front": front_part, "back": back_part, "pins": pin_layout}
+
+
 def _frontal_arch_cutter(outer_dims) -> trimesh.Trimesh:
     """
     Corta a abertura frontal em arco — usa um cilindro horizontal

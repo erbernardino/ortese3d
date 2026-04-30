@@ -31,4 +31,5 @@ export const pythonApi = {
 
   generateFromScan: (data) => request('POST', '/model/generate-from-scan', data),
   suggestZones: (data) => request('POST', '/model/suggest-zones', data),
+  splitHelmet: (data) => request('POST', '/model/split-helmet', data),
 }
