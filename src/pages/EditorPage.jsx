@@ -291,7 +291,7 @@ export default function EditorPage() {
             {sculptActive && (
               <>
                 <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
-                  {['push', 'pull', 'smooth'].map(m => (
+                  {['push', 'pull', 'smooth', 'grab'].map(m => (
                     <button key={m}
                       onClick={() => { setSculptMode(m); viewerRef.current?.setSculptMode({ active: true, mode: m }) }}
                       style={{ flex: 1, padding: '6px', fontSize: 12,

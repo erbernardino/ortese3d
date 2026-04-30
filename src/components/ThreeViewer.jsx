@@ -178,6 +178,9 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
     const pointerNDC = new THREE.Vector2()
     let pointerDown = false
 
+    // Estado do modo grab (capturado no pointerdown)
+    let grabState = null
+
     function getCanvasPointer(e) {
       const rect = renderer.domElement.getBoundingClientRect()
       pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1
@@ -255,18 +258,95 @@ export const ThreeViewer = forwardRef(function ThreeViewer({ style, onSculptComm
       mesh.geometry.computeVertexNormals()
     }
 
+    function startGrab(e) {
+      const { mesh } = stateRef.current
+      if (!mesh) return null
+      getCanvasPointer(e)
+      raycaster.setFromCamera(pointerNDC, camera)
+      const hits = raycaster.intersectObject(mesh)
+      if (!hits.length) return null
+
+      const hitWorld = hits[0].point.clone()
+      // Plano paralelo à câmera no ponto de hit — drag continua mesmo
+      // se o cursor sair da malha
+      const plane = new THREE.Plane(
+        camera.getWorldDirection(new THREE.Vector3()).negate(),
+        0,
+      )
+      plane.constant = -plane.normal.dot(hitWorld)
+
+      const local = mesh.worldToLocal(hitWorld.clone())
+      const { radius } = sculptRef.current
+      const positions = mesh.geometry.attributes.position
+      const indices = []
+      const original = []
+      const weights = []
+      for (let i = 0; i < positions.count; i++) {
+        const dx = positions.getX(i) - local.x
+        const dy = positions.getY(i) - local.y
+        const dz = positions.getZ(i) - local.z
+        const d = Math.sqrt(dx * dx + dy * dy + dz * dz)
+        if (d > radius) continue
+        indices.push(i)
+        original.push(positions.getX(i), positions.getY(i), positions.getZ(i))
+        weights.push((1 - d / radius) ** 2)
+      }
+      return { plane, anchorWorld: hitWorld, indices, original, weights }
+    }
+
+    function applyGrabMove(e) {
+      const { mesh } = stateRef.current
+      if (!mesh || !grabState) return
+      getCanvasPointer(e)
+      raycaster.setFromCamera(pointerNDC, camera)
+      const newWorld = new THREE.Vector3()
+      const ok = raycaster.ray.intersectPlane(grabState.plane, newWorld)
+      if (!ok) return
+
+      // Delta em world → converte para local space
+      const deltaWorld = newWorld.clone().sub(grabState.anchorWorld)
+      const inv = new THREE.Matrix4().copy(mesh.matrixWorld).invert()
+      // Aplica só rotação/escala (não translação) no delta
+      const m3 = new THREE.Matrix3().setFromMatrix4(inv)
+      const deltaLocal = deltaWorld.clone().applyMatrix3(m3)
+
+      const positions = mesh.geometry.attributes.position
+      const { strength } = sculptRef.current
+      for (let k = 0; k < grabState.indices.length; k++) {
+        const i = grabState.indices[k]
+        const ox = grabState.original[k * 3]
+        const oy = grabState.original[k * 3 + 1]
+        const oz = grabState.original[k * 3 + 2]
+        const w = grabState.weights[k] * strength
+        positions.setX(i, ox + deltaLocal.x * w)
+        positions.setY(i, oy + deltaLocal.y * w)
+        positions.setZ(i, oz + deltaLocal.z * w)
+      }
+      positions.needsUpdate = true
+      mesh.geometry.computeVertexNormals()
+    }
+
     function onPointerDown(e) {
       if (!sculptRef.current.active) return
       pointerDown = true
-      applySculptStroke(e)
+      if (sculptRef.current.mode === 'grab') {
+        grabState = startGrab(e)
+      } else {
+        applySculptStroke(e)
+      }
     }
     function onPointerMove(e) {
       if (!sculptRef.current.active || !pointerDown) return
-      applySculptStroke(e)
+      if (sculptRef.current.mode === 'grab') {
+        applyGrabMove(e)
+      } else {
+        applySculptStroke(e)
+      }
     }
     function onPointerUp() {
       if (!sculptRef.current.active) return
       pointerDown = false
+      grabState = null
       onSculptCommit?.()
     }
 
