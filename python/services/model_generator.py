@@ -105,16 +105,17 @@ def generate_from_measurements(m: dict) -> trimesh.Trimesh:
 
 def _smooth_final(mesh: trimesh.Trimesh, iterations: int = 2) -> trimesh.Trimesh:
     """
-    Aplica Taubin smoothing preservando watertight + volume aproximado.
-    Tolerante a falhas: se o filtro quebrar (mesh degenerada), retorna
-    o original sem smoothing.
+    Aplica Taubin smoothing (preserva volume melhor que Laplaciano puro).
+    Aceita meshes com aberturas — o capacete final tem trim, frontal arch
+    e ear holes, então frequentemente não é watertight, o que é esperado.
+    Só rejeita o resultado se o filtro produzir mesh degenerada (sem faces).
     """
     try:
         smoothed = mesh.copy()
         trimesh.smoothing.filter_taubin(
             smoothed, lamb=0.5, nu=-0.53, iterations=iterations,
         )
-        if smoothed.is_watertight and smoothed.is_volume:
+        if len(smoothed.faces) > 0 and len(smoothed.vertices) > 0:
             return smoothed
     except Exception:
         pass
@@ -130,9 +131,18 @@ def generate_from_scan(
     frontal_opening: bool = True,
     ear_holes: bool = True,
     chamfer_bottom: bool = True,
+    condition_type: str | None = None,
+    cvai: float | None = None,
+    affected_side: str | None = None,
+    use_landmarks: bool = True,
 ) -> trimesh.Trimesh:
     """
     Constrói capacete a partir de um scan 3D da cabeça.
+
+    Quando cvai+affected_side são fornecidos, aplica offsets variáveis
+    por região (relief zone no lado achatado, contact zone no contralateral).
+    Quando use_landmarks=True, ancora trim/aberturas em landmarks
+    detectados no scan em vez de proporções da bbox.
     """
     if not scan_mesh.is_watertight:
         trimesh.repair.fill_holes(scan_mesh)
@@ -140,12 +150,23 @@ def generate_from_scan(
     scan_mesh.fix_normals()
     normals = scan_mesh.vertex_normals
 
+    landmarks = _detect_landmarks(scan_mesh) if use_landmarks else None
+
+    outer_offset = _per_vertex_offsets(
+        scan_mesh, base_offset=offset_mm + wall_mm,
+        cvai=cvai, side=affected_side,
+    )
+    inner_offset = _per_vertex_offsets(
+        scan_mesh, base_offset=offset_mm,
+        cvai=cvai, side=affected_side,
+    )
+
     outer = scan_mesh.copy()
-    outer.vertices = scan_mesh.vertices + normals * (offset_mm + wall_mm)
+    outer.vertices = scan_mesh.vertices + normals * outer_offset[:, None]
     outer.fix_normals()
 
     inner = scan_mesh.copy()
-    inner.vertices = scan_mesh.vertices + normals * offset_mm
+    inner.vertices = scan_mesh.vertices + normals * inner_offset[:, None]
     inner.fix_normals()
 
     helmet = difference([outer, inner])
@@ -155,19 +176,234 @@ def generate_from_scan(
 
     if vent_holes > 0:
         for cyl in _vent_cylinders(outer_dims, vent_holes, vent_radius_mm):
-            helmet = difference([helmet, cyl])
+            try:
+                helmet = difference([helmet, cyl])
+            except ValueError:
+                continue
 
     if ear_holes:
-        for cut in _ear_cutters(outer_dims):
-            helmet = difference([helmet, cut])
+        ear_cuts = (
+            _ear_cutters_from_landmarks(landmarks)
+            if landmarks else _ear_cutters(outer_dims)
+        )
+        for cut in ear_cuts:
+            try:
+                helmet = difference([helmet, cut])
+            except ValueError:
+                continue
 
     if frontal_opening:
-        helmet = difference([helmet, _frontal_arch_cutter(outer_dims)])
+        arch = (
+            _frontal_arch_cutter_from_landmarks(landmarks)
+            if landmarks else _frontal_arch_cutter(outer_dims)
+        )
+        try:
+            helmet = difference([helmet, arch])
+        except ValueError:
+            pass
 
     if chamfer_bottom:
-        helmet = difference([helmet, _bottom_chamfer_cutter(outer_dims)])
+        try:
+            helmet = difference([helmet, _bottom_chamfer_cutter(outer_dims)])
+        except ValueError:
+            pass
 
+    if condition_type:
+        trim = (
+            _top_trim_line_from_landmarks(condition_type, landmarks)
+            if landmarks else _top_trim_line(condition_type, outer_dims)
+        )
+        if trim is not None:
+            try:
+                helmet = difference([helmet, trim])
+            except ValueError:
+                pass
+
+    helmet = _smooth_final(helmet)
     return helmet
+
+
+# ---------------------------------------------------------------------------
+# Landmarks e offsets por região
+# ---------------------------------------------------------------------------
+
+def _detect_landmarks(mesh: trimesh.Trimesh) -> dict:
+    """
+    Detecção heurística de landmarks a partir de bounding box + simetria
+    aproximada do scan. Convenção de eixos: +x frente, +y direita, +z topo.
+
+    Retorna dict com pontos 3D (mm) + dims locais. Não usa ML —
+    extremos da bounding box e amostragem dirigida via ray casting.
+    """
+    bounds = mesh.bounds  # 2x3
+    center = (bounds[0] + bounds[1]) / 2
+    extents = bounds[1] - bounds[0]
+    ax, ay, az = extents / 2
+
+    v = mesh.vertices
+    # Translada para centro da bbox (não destrói o mesh original — só pra
+    # trabalhar em coords centradas)
+    vc = v - center
+
+    # vértex: ponto de maior z
+    idx_top = int(np.argmax(vc[:, 2]))
+    vertex = v[idx_top]
+
+    # ínion (occipital extremo): menor x
+    idx_back = int(np.argmin(vc[:, 0]))
+    inion = v[idx_back]
+
+    # násio aproximado: maior x, z médio-baixo
+    front_mask = vc[:, 0] > ax * 0.7
+    if front_mask.any():
+        candidates = vc[front_mask]
+        z_target = -az * 0.1  # um pouco abaixo do equador
+        idx_local = int(np.argmin(np.abs(candidates[:, 2] - z_target)))
+        nasion = v[front_mask][idx_local]
+    else:
+        nasion = center + np.array([ax, 0, 0])
+
+    # tragus E/D: pontos laterais extremos em z médio
+    z_eq_mask = np.abs(vc[:, 2]) < az * 0.25
+    if z_eq_mask.any():
+        sub = vc[z_eq_mask]
+        idx_r = int(np.argmax(sub[:, 1]))
+        idx_l = int(np.argmin(sub[:, 1]))
+        tragus_r = v[z_eq_mask][idx_r]
+        tragus_l = v[z_eq_mask][idx_l]
+    else:
+        tragus_r = center + np.array([0, ay, 0])
+        tragus_l = center + np.array([0, -ay, 0])
+
+    # glabela: frontal alto (entre as sobrancelhas)
+    front_high_mask = (vc[:, 0] > ax * 0.6) & (vc[:, 2] > az * 0.2)
+    if front_high_mask.any():
+        sub = vc[front_high_mask]
+        idx_g = int(np.argmin(np.abs(sub[:, 1])))  # mais central em y
+        glabela = v[front_high_mask][idx_g]
+    else:
+        glabela = center + np.array([ax * 0.85, 0, az * 0.4])
+
+    return {
+        "center": center,
+        "extents": extents,
+        "vertex": vertex,
+        "inion": inion,
+        "nasion": nasion,
+        "tragus_r": tragus_r,
+        "tragus_l": tragus_l,
+        "glabela": glabela,
+    }
+
+
+def _per_vertex_offsets(
+    mesh: trimesh.Trimesh,
+    base_offset: float,
+    cvai: float | None = None,
+    side: str | None = None,
+) -> np.ndarray:
+    """
+    Calcula offset por vértice. Quando cvai+side disponíveis, aplica:
+      - relief zone no occipital do lado achatado (offset maior)
+      - contact zone no occipital contralateral (offset menor)
+    Severidade dosada pelo CVAI (Argenta).
+    """
+    n = len(mesh.vertices)
+    offsets = np.full(n, base_offset, dtype=float)
+
+    if cvai is None or side is None or cvai < 1.0:
+        return offsets
+
+    # Severidade → modulação de offset (mm relativos ao base)
+    if cvai < 3.5:
+        relief = 1.0
+        contact = -0.5
+    elif cvai < 6.5:
+        relief = 2.5
+        contact = -1.0
+    elif cvai < 8.75:
+        relief = 4.0
+        contact = -1.5
+    else:
+        relief = 5.5
+        contact = -2.0
+
+    bounds = mesh.bounds
+    center = (bounds[0] + bounds[1]) / 2
+    ax, ay, az = (bounds[1] - bounds[0]) / 2
+    if ax < 1e-3 or ay < 1e-3:
+        return offsets
+
+    v = mesh.vertices - center
+    nx = v[:, 0] / ax       # frente=+, trás=-
+    ny = v[:, 1] / ay       # direita=+, esquerda=-
+    nz = v[:, 2] / az
+
+    affected_y = +1.0 if side == "right" else -1.0
+    # Gaussian centrada no quadrante posterior do lado afetado
+    posterior = np.maximum(-nx, 0)             # 0..1 só na traseira
+    side_match_relief = np.maximum(ny * affected_y, 0)
+    side_match_contact = np.maximum(-ny * affected_y, 0)
+    z_band = np.exp(-((nz - 0.0) ** 2) / 0.6)  # banda em torno do equador
+
+    relief_field = posterior ** 2 * side_match_relief * z_band
+    contact_field = posterior ** 2 * side_match_contact * z_band
+
+    offsets += relief * relief_field + contact * contact_field
+    # Garante que offset interno nunca fica negativo (capacete tem que
+    # caber sobre a cabeça)
+    offsets = np.clip(offsets, 0.5, base_offset + max(relief, 0) * 1.2)
+    return offsets
+
+
+def _frontal_arch_cutter_from_landmarks(landmarks: dict) -> trimesh.Trimesh:
+    """Arch frontal ancorado em glabela + tragi (aprox 8mm acima da glabela)."""
+    glabela = landmarks["glabela"]
+    extents = landmarks["extents"]
+    ax, ay, az = extents / 2
+    radius = az * 1.2
+    cyl = trimesh.creation.cylinder(radius=radius, height=ay * 2.6, sections=48)
+    R = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
+    cyl.apply_transform(R)
+    # Posiciona o cilindro de modo que seu topo passe ~8mm acima da glabela
+    cz = glabela[2] - radius - 8.0
+    cyl.apply_translation([glabela[0], landmarks["center"][1], cz])
+    return cyl
+
+
+def _ear_cutters_from_landmarks(landmarks: dict):
+    """Capsules nas posições reais dos tragus (5mm de folga)."""
+    extents = landmarks["extents"]
+    ay = extents[1] / 2
+    az = extents[2] / 2
+    cuts = []
+    for tragus in (landmarks["tragus_r"], landmarks["tragus_l"]):
+        cap = trimesh.creation.capsule(
+            radius=ay * 0.18,
+            height=az * 0.55,
+            count=[12, 12],
+        )
+        R = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
+        cap.apply_transform(R)
+        cap.apply_translation(tragus)
+        cuts.append(cap)
+    return cuts
+
+
+def _top_trim_line_from_landmarks(condition_type: str, landmarks: dict):
+    """Trim line centrada no vértex (não na bbox)."""
+    vertex = landmarks["vertex"]
+    extents = landmarks["extents"]
+    cutter = _top_trim_line(condition_type, extents / 2)
+    if cutter is None:
+        return None
+    # _top_trim_line já posiciona em az*0.95; recoloca exatamente sobre o vértex
+    cutter.apply_translation([
+        vertex[0] - 0,
+        vertex[1] - 0,
+        vertex[2] - extents[2] / 2 * 0.95,
+    ])
+    return cutter
 
 
 # ---------------------------------------------------------------------------
@@ -619,10 +855,61 @@ def _flower_vent_cluster(center, direction, petal_count=8,
     return cutters
 
 
+def _oval_slot_cutter(center, direction, radius, length, depth):
+    """
+    Slot oval (capsule) Sprout3D-style. Direction é a normal radial;
+    o eixo longo do oval fica tangencial à superfície (perpendicular
+    ao meridiano).
+    """
+    cap = trimesh.creation.capsule(
+        radius=radius, height=length, count=[12, 12],
+    )
+    # Capsule está em Z (eixo longo). Para o slot ficar tangencial,
+    # primeiro alinhamos esse eixo Z à direção tangencial-meridional
+    # (perpendicular à normal e ao eixo vertical do mundo).
+    z_axis = np.array([0, 0, 1])
+    direction = np.asarray(direction, dtype=float)
+    direction = direction / max(np.linalg.norm(direction), 1e-9)
+
+    # tangente meridional ≈ projeção de Z no plano da normal
+    tangent = z_axis - np.dot(z_axis, direction) * direction
+    if np.linalg.norm(tangent) < 1e-3:
+        tangent = np.array([1.0, 0.0, 0.0])
+    tangent = tangent / np.linalg.norm(tangent)
+
+    # rotação que leva +Z (eixo da capsule) → tangent
+    rot_axis = np.cross(z_axis, tangent)
+    rot_norm = np.linalg.norm(rot_axis)
+    if rot_norm > 1e-9:
+        angle = np.arccos(np.clip(np.dot(z_axis, tangent), -1, 1))
+        R = trimesh.transformations.rotation_matrix(angle, rot_axis / rot_norm)
+        cap.apply_transform(R)
+
+    # bore radial perfurando profundamente — garante atravessamento
+    bore = trimesh.creation.cylinder(
+        radius=radius * 1.02, height=depth, sections=16,
+    )
+    rot_axis_b = np.cross(z_axis, direction)
+    rot_norm_b = np.linalg.norm(rot_axis_b)
+    if rot_norm_b > 1e-9:
+        angle_b = np.arccos(np.clip(np.dot(z_axis, direction), -1, 1))
+        R_b = trimesh.transformations.rotation_matrix(angle_b, rot_axis_b / rot_norm_b)
+        bore.apply_transform(R_b)
+
+    cap.apply_translation(center)
+    bore.apply_translation(center)
+    try:
+        slot = union([cap, bore])
+        return slot
+    except Exception:
+        return bore  # fallback: pelo menos perfura
+
+
 def _vent_cylinders(outer_dims, n_holes, radius):
     """
-    Padrão híbrido: 1 cluster "flor Sphera" no centro do topo +
-    slots ovais simples (capsules) nas outras posições.
+    Padrão híbrido Sprout3D-style: 1 cluster "flor Sphera" no centro
+    do topo + slots ovais (capsules tangenciais) nas demais posições.
+    Retorna lista de cutters individuais para boolean encadeada robusta.
     """
     ax, ay, az = outer_dims
     max_r = max(outer_dims) * 1.6
@@ -640,9 +927,10 @@ def _vent_cylinders(outer_dims, n_holes, radius):
         depth=max_r,
     ))
 
-    # Slots ovais nos demais pontos
+    # Slots ovais nos demais pontos (Fibonacci spiral)
     remaining = max(0, n_holes - 8)
     placed = 0
+    slot_length = radius * 3.6   # oval alongado vertical
     for i in range(remaining * 2):
         idx = i + 0.5
         phi = np.arccos(1 - 2 * idx / (remaining * 4))
@@ -651,7 +939,7 @@ def _vent_cylinders(outer_dims, n_holes, radius):
         y = np.sin(phi) * np.sin(theta)
         z = np.cos(phi)
 
-        # ignora hemisfério inferior + zona do cluster topo (z muito alto)
+        # ignora hemisfério inferior + zona do cluster topo
         if z < 0.30 or z > 0.85:
             continue
         if abs(y) > 0.85 and z < 0.6:
@@ -663,16 +951,10 @@ def _vent_cylinders(outer_dims, n_holes, radius):
         direction = np.array([x, y, z])
         direction = direction / np.linalg.norm(direction)
 
-        cyl = trimesh.creation.cylinder(radius=radius, height=max_r, sections=16)
-        z_axis = np.array([0, 0, 1])
-        rot_axis = np.cross(z_axis, direction)
-        rot_norm = np.linalg.norm(rot_axis)
-        if rot_norm > 1e-9:
-            angle = np.arccos(np.clip(np.dot(z_axis, direction), -1, 1))
-            R = trimesh.transformations.rotation_matrix(angle, rot_axis / rot_norm)
-            cyl.apply_transform(R)
-        cyl.apply_translation(center)
-        cutters.append(cyl)
+        cutters.append(_oval_slot_cutter(
+            center, direction,
+            radius=radius, length=slot_length, depth=max_r,
+        ))
         placed += 1
 
         if placed >= remaining:

@@ -87,6 +87,12 @@ def generate_from_scan_endpoint(data: dict):
             vent_holes=int(data.get("vent_holes", 12)),
             vent_radius_mm=float(data.get("vent_radius_mm", 4.0)),
             frontal_opening=bool(data.get("frontal_opening", True)),
+            ear_holes=bool(data.get("ear_holes", True)),
+            chamfer_bottom=bool(data.get("chamfer_bottom", True)),
+            condition_type=data.get("condition_type"),
+            cvai=float(data["cvai"]) if data.get("cvai") is not None else None,
+            affected_side=data.get("affected_side"),
+            use_landmarks=bool(data.get("use_landmarks", True)),
         )
         buf = io.BytesIO()
         helmet.export(buf, file_type="stl")
@@ -171,8 +177,10 @@ def validate_model(data: dict):
         from python.services.validator import validate_mesh
         return validate_mesh(
             mesh,
-            min_thickness_mm=data.get("min_thickness_mm", 2.0),
-            min_clearance_mm=data.get("min_clearance_mm", 3.0),
+            min_thickness_mm=float(data.get("min_thickness_mm", 2.5)),
+            min_clearance_mm=float(data.get("min_clearance_mm", 3.0)),
+            age_months=data.get("age_months"),
+            fontanelle_check=bool(data.get("fontanelle_check", True)),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
