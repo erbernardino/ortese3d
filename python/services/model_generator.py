@@ -605,6 +605,22 @@ def _rounded_plate(thickness, extension, width, sections=16):
     return plate
 
 
+def _flat_plate_xz(length_x, thickness_y, width_z, subdivisions=2):
+    """
+    Plate retangular tangente à casca, com cantos arredondados via
+    Taubin smoothing. Eixos: length em X (axial), thickness em Y
+    (radial-out), width em Z (tangencial).
+    """
+    box = trimesh.creation.box(extents=(length_x, thickness_y, width_z))
+    for _ in range(subdivisions):
+        box = box.subdivide()
+    try:
+        trimesh.smoothing.filter_taubin(box, lamb=0.5, nu=-0.5, iterations=2)
+    except Exception:
+        pass
+    return box
+
+
 def _surface_radial_hit(mesh: trimesh.Trimesh, y_dir: float, z_dir: float,
                          x_query: float = 0.0):
     """
@@ -712,6 +728,150 @@ def _anchor_pin(y_pos, z_pos, side='front', helmet_mesh=None,
     pin.apply_transform(R)
     pin.apply_translation([cx, y_anchor, z_anchor])
     return pin
+
+
+def _hybrid_plate(y_pos, z_pos, side='front', helmet_mesh=None,
+                  plate_length=22.0, plate_thickness=4.0, plate_width=12.0,
+                  pin_offset_axial=6.0, slot_offset_axial=-6.0,
+                  slot_length=10.0, slot_height=3.5,
+                  pin_neck_radius=2.5, pin_head_radius=4.5,
+                  pin_neck_length=3.0, pin_head_length=2.5,
+                  base_height=1.5):
+    """
+    Plate retangular alongado integrado à carcaça externa, contendo
+    pino cogumelo (snap-fit) + fenda oblonga (slide buckle) lado a
+    lado, no mesmo bloco. Sistema MyCRO Band híbrido:
+
+      [ slot oblongo ] [ pino cogumelo ]
+       (slide buckle)   (snap-fit final)
+
+    A tira elástica (item separado) passa pela fenda permitindo
+    ajuste contínuo da tensão, depois o clipe na ponta da tira faz
+    snap-fit no pino. Travamento pela tensão da tira.
+
+    Frame local:
+      X = axial (paralelo à direção do split frente↔trás)
+      Y = radial-out (sai da casca pra fora)
+      Z = tangencial (perpendicular ao split, ao longo da circunferência)
+
+    Posicionamento crítico:
+      - cx_center: o plate fica TODO dentro da peça (front ou back),
+        sem invadir o plano de corte.
+      - Posição radial via ray-cast: o plate encosta na superfície
+        externa real (que varia anatomicamente), nunca furando o
+        interior da casca.
+    """
+    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
+    if norm < 1e-3:
+        return None
+    ny, nz = y_pos / norm, z_pos / norm
+    angle = np.arctan2(nz, ny)
+    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+
+    # Plate centrado axialmente dentro da peça (não no plano x=0).
+    # A margem garante que o plate todo está em x>=0 (front) ou x<=0 (back).
+    cx_center = (
+        +plate_length / 2 + 1.0 if side == 'front'
+        else -plate_length / 2 - 1.0
+    )
+
+    # Posição radial real no plano do centro do plate
+    if helmet_mesh is not None:
+        hit = _surface_radial_hit(helmet_mesh, ny, nz, x_query=cx_center)
+        y_surf, z_surf = (hit if hit is not None else (y_pos, z_pos))
+    else:
+        y_surf, z_surf = y_pos, z_pos
+
+    # Plate base no frame local (X axial, Y radial-out, Z tangencial).
+    # Posicionado com base na superfície (Y=0) e topo para fora (Y=+thickness).
+    plate = _flat_plate_xz(plate_length, plate_thickness, plate_width)
+    plate.apply_translation([0, plate_thickness / 2 + base_height / 2, 0])
+
+    # Base sob o plate (transição suave casca→plate, evita rebarba na
+    # interface). Pequena box mais larga que o plate, com altura
+    # base_height, posicionada entre Y=0 e Y=base_height.
+    base = trimesh.creation.box(extents=(
+        plate_length * 0.9, base_height, plate_width * 0.9,
+    ))
+    base.apply_translation([0, base_height / 2, 0])
+    plate = union([plate, base])
+
+    # Slot oblongo passante (atravessa o plate em Y, eixo longo em X)
+    slot_total_h = plate_thickness + base_height + 1.0
+    slot_box = trimesh.creation.box(extents=(
+        max(0.001, slot_length - slot_height),
+        slot_total_h,
+        slot_height,
+    ))
+    slot_box.apply_translation([slot_offset_axial, slot_total_h / 2, 0])
+    R_zy = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
+    slot_caps = []
+    for s in (-1, +1):
+        cap = trimesh.creation.cylinder(
+            radius=slot_height / 2,
+            height=slot_total_h, sections=16,
+        )
+        cap.apply_transform(R_zy)
+        cap.apply_translation([
+            slot_offset_axial + s * (slot_length - slot_height) / 2,
+            slot_total_h / 2,
+            0,
+        ])
+        slot_caps.append(cap)
+
+    cutters_local = [slot_box] + slot_caps
+    for c in cutters_local:
+        try:
+            plate = difference([plate, c])
+        except Exception:
+            continue
+
+    # Pino cogumelo no frame local (eixo Y_local = radial-out).
+    # IMPORTANTE: o pino_neck deve ATRAVESSAR a face superior do
+    # plate (sobreposição volumétrica) para que o boolean union funda
+    # plate+pino em mesh único. Tangente sem sobreposição produz
+    # componente desconexa.
+    plate_top = plate_thickness + base_height       # topo do plate
+    pin_overlap = 1.5                                # quanto o pino entra no plate
+    neck_total = pin_neck_length + pin_overlap
+    pin_neck = trimesh.creation.cylinder(
+        radius=pin_neck_radius, height=neck_total, sections=16,
+    )
+    pin_neck.apply_transform(R_zy)
+    pin_neck.apply_translation([
+        pin_offset_axial,
+        plate_top - pin_overlap + neck_total / 2,
+        0,
+    ])
+    pin_head = trimesh.creation.cylinder(
+        radius=pin_head_radius, height=pin_head_length, sections=20,
+    )
+    pin_head.apply_transform(R_zy)
+    pin_head.apply_translation([
+        pin_offset_axial,
+        plate_top + pin_neck_length + pin_head_length / 2,
+        0,
+    ])
+    try:
+        pin = union([pin_neck, pin_head])
+        plate = union([plate, pin])
+    except Exception:
+        # Fallback: mesmo sem fundir manifold, retorna o plate.
+        # Pino fica como componente isolada — usuário pode querer
+        # imprimir e colar separadamente.
+        pass
+
+    # Como a casca é curva e o plate é plano, em x=±plate_length/2 a
+    # superfície externa real está 1-3mm mais radial-in que no centro.
+    # Penetra base radialmente por base_dive para garantir intersecção
+    # ao longo de TODO o comprimento do plate. base_dive precisa ser
+    # menor que wall_mm (3mm) para nao furar o interior.
+    base_dive = 2.5
+    y_anchor = y_surf - ny * base_dive
+    z_anchor = z_surf - nz * base_dive
+    plate.apply_transform(R)
+    plate.apply_translation([cx_center, y_anchor, z_anchor])
+    return plate
 
 
 def _strap_anchor(y_pos, z_pos, lug_thickness=6.0, lug_extension=14.0,
@@ -954,7 +1114,7 @@ def split_into_two_parts(
     helmet: trimesh.Trimesh,
     outer_dims,
     pin_count: int = 2,
-    closure_type: str = "snap_pin",
+    closure_type: str = "hybrid_plate",
     use_slide_latch: bool = True,           # legado, lido se closure_type='slide_latch'
     pin_radius: float = 2.5,                # parafuso M5 (modo legado)
     lug_extension: float = 14.0,
@@ -966,11 +1126,13 @@ def split_into_two_parts(
     coronal (YZ em x=0).
 
     closure_type:
-      'snap_pin' (padrão) — sistema MyCRO Band: anchor pin (cogumelo)
-        integrado direto na carcaça externa em cada lateral, com
-        canal de guia raso. Tira elástica + clipe snap-fit são itens
-        separados (não impressos): o clipe na ponta da tira abraça
-        o pino por pressão e a tensão da tira mantém o travamento.
+      'hybrid_plate' (padrão) — placa retangular alongada integrada
+        à carcaça externa de cada peça com pino cogumelo + fenda
+        oblonga lado a lado. A tira elástica passa pela fenda
+        (ajuste contínuo da tensão) e o clipe na ponta da tira
+        faz snap-fit no pino (travamento pela tensão).
+      'snap_pin' — só o pino cogumelo direto na carcaça (sem plate
+        integrado, sem fenda).
       'slide_buckle' — fivela slide com 2 fendas e barra central
         na peça traseira + âncora de tira (D-ring) na peça frontal.
         Tira de tecido/velcro com keeper elástico.
@@ -1010,14 +1172,32 @@ def split_into_two_parts(
     # Resolve closure_type (legado: use_slide_latch=True força slide_latch
     # mesmo com closure_type padrão; útil pra clientes antigos da API)
     effective_closure = closure_type
-    if effective_closure not in ("snap_pin", "slide_buckle", "slide_latch", "simple"):
-        effective_closure = "snap_pin"
+    if effective_closure not in (
+        "hybrid_plate", "snap_pin", "slide_buckle", "slide_latch", "simple",
+    ):
+        effective_closure = "hybrid_plate"
     if use_slide_latch is False and effective_closure == "slide_latch":
         effective_closure = "simple"
 
     # Adiciona os fechos a cada metade independentemente
     for (y_surf, z_surf) in lug_layout:
-        if effective_closure == "snap_pin":
+        if effective_closure == "hybrid_plate":
+            # Plate retangular com pino + fenda em cada peça (front e back).
+            # Tira elástica externa liga D↔D e E↔E, passando pela fenda
+            # (ajuste contínuo) e travando o clipe no pino (snap-fit).
+            plate_f = _hybrid_plate(y_surf, z_surf, side='front', helmet_mesh=helmet)
+            plate_b = _hybrid_plate(y_surf, z_surf, side='back',  helmet_mesh=helmet)
+            if plate_f is None or plate_b is None:
+                continue
+            try:
+                front_part = union([front_part, plate_f])
+            except Exception:
+                pass
+            try:
+                back_part = union([back_part, plate_b])
+            except Exception:
+                pass
+        elif effective_closure == "snap_pin":
             # MyCRO: pino direto na carcaça externa de cada metade.
             # Pino de cada peça é deslocado axialmente em ±8mm para
             # dentro da própria peça (não fica no plano de corte),
