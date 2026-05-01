@@ -607,10 +607,15 @@ def _rounded_plate(thickness, extension, width, sections=16):
 
 def _slide_latch_male(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
                       lug_width=22.0, neck_radius=2.5, head_radius=4.5,
-                      neck_length=4.0, head_length=2.0):
+                      neck_length=12.0, head_length=3.0):
     """
-    Lingueta com pino tipo cogumelo (eixo radial saindo PRA FORA).
-    Para encaixar no slot keyhole da contra-peça.
+    Macho: aba (plate) totalmente na peça frontal (centrada em x=+T/2)
+    com pino cogumelo apontando para -X. O pino atravessa o plate da
+    fêmea e a head fica do outro lado, travando como keyhole Ottobock.
+
+    Restrições para travar:
+      neck_length >= 1.5 * lug_thickness  (atravessa o plate fêmea com folga)
+      head_radius > neck_radius           (head segura do outro lado)
     """
     norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
     if norm < 0.001:
@@ -619,41 +624,43 @@ def _slide_latch_male(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
     angle = np.arctan2(nz, ny)
     R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
 
-    # Posição do centro da aba — afastada radialmente
-    cx, cy, cz = 0, y_pos + ny * lug_extension / 2, z_pos + nz * lug_extension / 2
+    cy = y_pos + ny * lug_extension / 2
+    cz = z_pos + nz * lug_extension / 2
+    cx = +lug_thickness / 2     # plate inteiro em x>=0 (frontal)
 
-    # Plate (aba) com cantos arredondados — sem pontas vivas
     plate = _rounded_plate(lug_thickness, lug_extension, lug_width)
     plate.apply_transform(R)
     plate.apply_translation([cx, cy, cz])
 
-    # Pino cogumelo apontando para -X. Construir com union pra virar
-    # mesh manifold (concatenate cria componentes desconectados).
+    # Pino: neck em Z + head deslocada em +Z. Depois rotação Z→-X.
     neck = trimesh.creation.cylinder(radius=neck_radius, height=neck_length, sections=16)
     head = trimesh.creation.cylinder(radius=head_radius, height=head_length, sections=20)
     head.apply_translation([0, 0, neck_length / 2 + head_length / 2])
     pin = union([neck, head])
 
-    # Cilindro original em Z; rotaciona pra eixo -X
+    # Rotação -90° em Y leva +Z → -X. Após isso, conjunto (pré-translação):
+    #   neck:  x ∈ [-N/2, +N/2]
+    #   head:  x ∈ [-(N/2+H), -N/2]
+    #   total: x ∈ [-(N/2+H), +N/2]
     R_pin = trimesh.transformations.rotation_matrix(-np.pi / 2, [0, 1, 0])
     pin.apply_transform(R_pin)
-    # Posiciona: base do pino dentro da peça frontal (x>0); cabeça atravessa
-    # plano de corte e fica em x negativo (peça traseira)
-    pin.apply_translation([
-        +neck_length / 2 - head_length / 2,
-        cy, cz,
-    ])
+    # Quero base do neck (x=+N/2 pré-translação) em x=cx (dentro do plate
+    # macho); ponta da head fica em cx - N - H (atrás do plate fêmea).
+    pin.apply_translation([cx - neck_length / 2, cy, cz])
 
-    return union([plate, pin])
+    try:
+        return union([plate, pin])
+    except Exception:
+        return None
 
 
 def _slide_latch_female(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
                         lug_width=22.0, neck_radius=2.5, head_radius=4.5,
-                        slot_length=10.0, clearance=0.3):
+                        slot_length=10.0, clearance=0.4):
     """
-    Lingueta com slot keyhole rasgado (extremidade larga + extensão estreita).
-    Pino macho da contra-peça entra pela extremidade larga e desliza para a
-    estreita, ficando preso pela cabeça.
+    Fêmea: aba (plate) totalmente na peça traseira (centrada em x=-T/2)
+    com slot keyhole passante em X. O pino do macho entra pelo big_hole,
+    desliza tangencialmente para o narrow_slot, ficando preso pela head.
     """
     norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
     if norm < 0.001:
@@ -662,88 +669,92 @@ def _slide_latch_female(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
     angle = np.arctan2(nz, ny)
     R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
 
-    cx, cy, cz = 0, y_pos + ny * lug_extension / 2, z_pos + nz * lug_extension / 2
+    cy = y_pos + ny * lug_extension / 2
+    cz = z_pos + nz * lug_extension / 2
+    cx = -lug_thickness / 2    # plate inteiro em x<=0 (traseira)
 
     plate = _rounded_plate(lug_thickness, lug_extension, lug_width)
     plate.apply_transform(R)
     plate.apply_translation([cx, cy, cz])
 
-    # Slot keyhole no plate, eixo X (passante)
-    # Extremidade LARGA (radius head + folga) numa ponta do slot
-    big_hole = trimesh.creation.cylinder(
+    # Construo cutters em frame local (X axial passante, Z tangencial),
+    # depois aplico R + translação. Mais limpo que o cálculo manual.
+    R_zx = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+
+    cutters_local = []
+    # big hole: +Z_local
+    big = trimesh.creation.cylinder(
         radius=head_radius + clearance,
-        height=lug_thickness * 1.5, sections=20,
+        height=lug_thickness * 1.6, sections=20,
     )
-    R_x = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
-    big_hole.apply_transform(R_x)
-    # posição: deslocado tangencialmente do centro (no eixo Z' local = lug_width)
-    # Aplicamos a rotação R do plate para alinhar o offset com o eixo Z' tangencial
-    big_offset_local = np.array([0, 0, +slot_length / 2])
-    big_offset = R[:3, :3] @ big_offset_local
-    big_hole.apply_translation([cx, cy + big_offset[1], cz + big_offset[2]])
+    big.apply_transform(R_zx)
+    big.apply_translation([0, 0, +slot_length / 2])
+    cutters_local.append(big)
 
-    # Slot ESTREITO (passa só o pescoço): caixa fina + 2 cilindros nas
-    # extremidades (capsule) — sem cantos vivos no perímetro do slot
+    # narrow slot: caixa central com 2 capsule caps nas pontas
     nr = neck_radius + clearance
-    narrow_box = trimesh.creation.box(extents=(
-        lug_thickness * 1.5,
-        2 * nr,
-        slot_length,
+    narrow = trimesh.creation.box(extents=(
+        lug_thickness * 1.6, 2 * nr, slot_length,
     ))
-    narrow_box.apply_transform(R)
-    narrow_box.apply_translation([cx, cy, cz])
+    cutters_local.append(narrow)
 
-    # caps nas pontas do slot (eixo X passante)
-    R_x_local = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
-    end_caps = []
     for sign in (-1, +1):
         cap = trimesh.creation.cylinder(
-            radius=nr, height=lug_thickness * 1.5, sections=16,
+            radius=nr, height=lug_thickness * 1.6, sections=16,
         )
-        cap.apply_transform(R_x_local)
-        # offset ao longo do eixo Z' (tangencial) do plate
-        offset_local = np.array([0, 0, sign * slot_length / 2])
-        offset = R[:3, :3] @ offset_local
-        cap.apply_translation([cx + offset[1] * 0, cy + offset[1], cz + offset[2]])
-        end_caps.append(cap)
+        cap.apply_transform(R_zx)
+        cap.apply_translation([0, 0, sign * slot_length / 2])
+        cutters_local.append(cap)
 
-    plate_with_slot = difference([plate, big_hole])
-    plate_with_slot = difference([plate_with_slot, narrow_box])
-    for cap in end_caps:
-        plate_with_slot = difference([plate_with_slot, cap])
+    plate_with_slot = plate
+    for c in cutters_local:
+        c.apply_transform(R)
+        c.apply_translation([cx, cy, cz])
+        try:
+            plate_with_slot = difference([plate_with_slot, c])
+        except Exception:
+            continue
+
     return plate_with_slot
 
 
 def split_into_two_parts(
     helmet: trimesh.Trimesh,
     outer_dims,
-    pin_count: int = 4,
+    pin_count: int = 2,
     use_slide_latch: bool = True,
-    pin_radius: float = 2.5,        # parafuso M5 (modo simples)
+    pin_radius: float = 2.5,        # parafuso M5 (modo legado)
     lug_extension: float = 14.0,
     lug_thickness: float = 8.0,
     lug_width: float = 22.0,
 ):
     """
     Divide o capacete em duas peças (frontal e traseira) por um plano
-    coronal (YZ em x=0).
+    coronal (YZ em x=0). Conectores laterais (estilo Ottobock):
 
-    Os conectores ficam **fora** da casca como abas (lugs) radiais
-    saindo da superfície externa, sobre a linha de corte. Cada lug
-    é dividido pelo plano de corte: metade fica em cada peça. Quando
-    as peças são juntadas, as duas metades se encostam e um parafuso
-    passante (eixo X) atravessa ambas, fixando as peças sem invadir
-    o espaço interno da cabeça do bebê.
+      - Macho: plate na peça frontal (cx=+T/2) + pino cogumelo
+        apontando para -X (atravessa o plate fêmea quando fechado).
+      - Fêmea: plate na peça traseira (cx=-T/2) com slot keyhole
+        passante. Pino entra pelo big_hole, desliza pra narrow_slot
+        e a head trava do outro lado.
+
+    Layout: 2 conectores laterais (z=0, y=±ay) — posições com casca
+    real (não em zona cortada por trim/arch/ear). Pin_count=4 adiciona
+    par superior z=+az*0.4, ainda dentro da casca remanescente.
     """
     ax, ay, az = outer_dims
 
-    # Posições (y, z) em torno da circunferência do corte
-    lug_layout = []
-    lug_layout.append((0, +az))            # topo
-    lug_layout.append((+ay, 0.0))          # lateral direita
-    lug_layout.append((-ay, 0.0))          # lateral esquerda
+    # Layout: 2 conectores laterais médios (lado D + lado E).
+    # z=0 fica acima da abertura de orelhas (que está em z=-az*0.55)
+    # e abaixo da trim line do topo (que corta z>az*0.4 aprox).
+    lug_layout = [
+        (+ay * 0.95, 0.0),    # lateral direita
+        (-ay * 0.95, 0.0),    # lateral esquerda
+    ]
     if pin_count >= 4:
-        lug_layout.append((0, -az * 0.55)) # base (próxima à abertura frontal)
+        # Par superior (acima dos laterais), ainda longe da trim line
+        lug_layout.append((+ay * 0.55, +az * 0.40))
+        lug_layout.append((-ay * 0.55, +az * 0.40))
     lug_layout = lug_layout[:pin_count]
 
     # Caixas removedoras do split coronal
