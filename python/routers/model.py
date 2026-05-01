@@ -127,10 +127,11 @@ def split_helmet_endpoint(data: dict):
         result = split_into_two_parts(
             helmet, outer_dims,
             pin_count=int(data.get("pin_count", 2)),
+            closure_type=data.get("closure_type", "slide_buckle"),
             pin_radius=float(data.get("pin_radius_mm", 2.5)),
-            lug_extension=float(data.get("lug_extension_mm", 12.0)),
-            lug_thickness=float(data.get("lug_thickness_mm", 8.0)),
-            lug_width=float(data.get("lug_width_mm", 16.0)),
+            lug_extension=float(data.get("lug_extension_mm", 14.0)),
+            lug_thickness=float(data.get("lug_thickness_mm", 6.0)),
+            lug_width=float(data.get("lug_width_mm", 22.0)),
         )
 
         def to_b64(mesh):

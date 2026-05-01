@@ -605,6 +605,129 @@ def _rounded_plate(thickness, extension, width, sections=16):
     return plate
 
 
+def _strap_anchor(y_pos, z_pos, lug_thickness=6.0, lug_extension=14.0,
+                  lug_width=22.0, slot_length=16.0, slot_height=4.0,
+                  side='front'):
+    """
+    Âncora da tira (tipo D-ring rígido): plate com uma fenda oblonga
+    passante em X. A extremidade da tira de tecido/velcro é amarrada
+    ou costurada nesta âncora. A outra extremidade passa pela fivela
+    slide da peça contralateral.
+
+    side='front' coloca o plate em x>=0; 'back' em x<=0.
+    """
+    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
+    if norm < 0.001:
+        return None
+    ny, nz = y_pos / norm, z_pos / norm
+    angle = np.arctan2(nz, ny)
+    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+
+    cy = y_pos + ny * lug_extension / 2
+    cz = z_pos + nz * lug_extension / 2
+    cx = +lug_thickness / 2 if side == 'front' else -lug_thickness / 2
+
+    plate = _rounded_plate(lug_thickness, lug_extension, lug_width)
+    plate.apply_transform(R)
+    plate.apply_translation([cx, cy, cz])
+
+    # Uma fenda oblonga passante (tira passa por aqui e é fixada)
+    R_zx = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+    cutters_local = []
+    slot_box = trimesh.creation.box(extents=(
+        lug_thickness * 1.8,
+        slot_height,
+        max(0.001, slot_length - slot_height),
+    ))
+    cutters_local.append(slot_box)
+    for s in (-1, +1):
+        cap = trimesh.creation.cylinder(
+            radius=slot_height / 2,
+            height=lug_thickness * 1.8, sections=16,
+        )
+        cap.apply_transform(R_zx)
+        cap.apply_translation([0, 0, s * (slot_length - slot_height) / 2])
+        cutters_local.append(cap)
+
+    out = plate
+    for c in cutters_local:
+        c.apply_transform(R)
+        c.apply_translation([cx, cy, cz])
+        try:
+            out = difference([out, c])
+        except Exception:
+            continue
+    return out
+
+
+def _slide_buckle_plate(y_pos, z_pos, lug_thickness=6.0, lug_extension=18.0,
+                        lug_width=28.0, slot_length=16.0, slot_height=4.0,
+                        bar_width=4.0, side='back'):
+    """
+    Fivela slide / ladder lock: plate com 2 fendas oblongas paralelas
+    separadas por uma barra central. A tira passa pela fenda externa,
+    dobra sobre a barra central, sai pela fenda interna e é tensionada.
+    Fricção da dobra mantém o ajuste — sistema de ajuste contínuo.
+
+    A sobra da tira (após tensionar) é fixada por um keeper elástico
+    fornecido como item separado (não impresso): loop de elástico que
+    o usuário desliza sobre a sobra para evitar que se solte.
+
+    side='back' coloca o plate em x<=0; 'front' em x>=0.
+    """
+    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
+    if norm < 0.001:
+        return None
+    ny, nz = y_pos / norm, z_pos / norm
+    angle = np.arctan2(nz, ny)
+    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+
+    cy = y_pos + ny * lug_extension / 2
+    cz = z_pos + nz * lug_extension / 2
+    cx = -lug_thickness / 2 if side == 'back' else +lug_thickness / 2
+
+    plate = _rounded_plate(lug_thickness, lug_extension, lug_width)
+    plate.apply_transform(R)
+    plate.apply_translation([cx, cy, cz])
+
+    # 2 fendas distribuídas em Z_local (tangencial), separadas pela
+    # barra central de largura bar_width
+    slot_offset = (bar_width + slot_height) / 2
+    R_zx = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+
+    cutters_local = []
+    for sign in (-1, +1):
+        center_z = sign * slot_offset
+        slot_box = trimesh.creation.box(extents=(
+            lug_thickness * 1.8,
+            slot_height,
+            max(0.001, slot_length - slot_height),
+        ))
+        slot_box.apply_translation([0, 0, center_z])
+        cutters_local.append(slot_box)
+        for s in (-1, +1):
+            cap = trimesh.creation.cylinder(
+                radius=slot_height / 2,
+                height=lug_thickness * 1.8, sections=16,
+            )
+            cap.apply_transform(R_zx)
+            cap.apply_translation([
+                0, 0,
+                center_z + s * (slot_length - slot_height) / 2,
+            ])
+            cutters_local.append(cap)
+
+    out = plate
+    for c in cutters_local:
+        c.apply_transform(R)
+        c.apply_translation([cx, cy, cz])
+        try:
+            out = difference([out, c])
+        except Exception:
+            continue
+    return out
+
+
 def _slide_latch_male(y_pos, z_pos, lug_thickness=8.0, lug_extension=14.0,
                       lug_width=22.0, neck_radius=2.5, head_radius=4.5,
                       neck_length=12.0, head_length=3.0):
@@ -722,21 +845,26 @@ def split_into_two_parts(
     helmet: trimesh.Trimesh,
     outer_dims,
     pin_count: int = 2,
-    use_slide_latch: bool = True,
-    pin_radius: float = 2.5,        # parafuso M5 (modo legado)
+    closure_type: str = "slide_buckle",
+    use_slide_latch: bool = True,           # legado, lido se closure_type='slide_latch'
+    pin_radius: float = 2.5,                # parafuso M5 (modo legado)
     lug_extension: float = 14.0,
     lug_thickness: float = 8.0,
     lug_width: float = 22.0,
 ):
     """
     Divide o capacete em duas peças (frontal e traseira) por um plano
-    coronal (YZ em x=0). Conectores laterais (estilo Ottobock):
+    coronal (YZ em x=0).
 
-      - Macho: plate na peça frontal (cx=+T/2) + pino cogumelo
-        apontando para -X (atravessa o plate fêmea quando fechado).
-      - Fêmea: plate na peça traseira (cx=-T/2) com slot keyhole
-        passante. Pino entra pelo big_hole, desliza pra narrow_slot
-        e a head trava do outro lado.
+    closure_type:
+      'slide_buckle' (padrão) — fivela slide com 2 fendas e barra
+        central na peça traseira + âncora de tira (D-ring) na peça
+        frontal. A tira de tecido/velcro passa pela fivela permitindo
+        ajuste contínuo da tensão. A sobra da tira é fixada por
+        keeper elástico (item separado).
+      'slide_latch' — keyhole Ottobock: pino cogumelo + slot keyhole.
+        Fechamento rígido por encaixe + rotação tangencial.
+      'simple' — lug com furo passante para parafuso M5.
 
     Layout: 2 conectores laterais (z=0, y=±ay) — posições com casca
     real (não em zona cortada por trim/arch/ear). Pin_count=4 adiciona
@@ -767,9 +895,36 @@ def split_into_two_parts(
     front_part = difference([helmet, back_remover])
     back_part = difference([helmet, front_remover])
 
+    # Resolve closure_type (legado: use_slide_latch=True força slide_latch
+    # mesmo com closure_type padrão; útil pra clientes antigos da API)
+    effective_closure = closure_type
+    if effective_closure not in ("slide_buckle", "slide_latch", "simple"):
+        effective_closure = "slide_buckle"
+    if use_slide_latch is False and effective_closure == "slide_latch":
+        effective_closure = "simple"
+
     # Adiciona os fechos a cada metade independentemente
     for (y_surf, z_surf) in lug_layout:
-        if use_slide_latch:
+        if effective_closure == "slide_buckle":
+            anchor = _strap_anchor(
+                y_surf, z_surf,
+                lug_thickness=max(6.0, lug_thickness * 0.75),
+                lug_extension=lug_extension,
+                lug_width=lug_width,
+                side='front',
+            )
+            buckle = _slide_buckle_plate(
+                y_surf, z_surf,
+                lug_thickness=max(6.0, lug_thickness * 0.75),
+                lug_extension=lug_extension * 1.3,
+                lug_width=lug_width * 1.25,
+                side='back',
+            )
+            if anchor is None or buckle is None:
+                continue
+            front_part = union([front_part, anchor])
+            back_part = union([back_part, buckle])
+        elif effective_closure == "slide_latch":
             male = _slide_latch_male(
                 y_surf, z_surf,
                 lug_thickness=lug_thickness, lug_extension=lug_extension,
@@ -782,7 +937,6 @@ def split_into_two_parts(
             )
             if male is None or female is None:
                 continue
-            # Macho na peça frontal, fêmea na traseira
             front_part = union([front_part, male])
             back_part = union([back_part, female])
         else:
