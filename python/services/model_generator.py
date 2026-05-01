@@ -45,12 +45,24 @@ def generate_from_measurements(m: dict) -> trimesh.Trimesh:
     #   braqui → corte alongado curvo (F-O) que estimula crescimento
     #            longitudinal corrigindo achatamento occipital
     condition_type = m.get("condition_type")
+    cvai = m.get("cvai")
+    affected_side = m.get("affected_side")
 
     outer_dims = np.array([ax + offset, ay + offset, az + offset * 0.5])
     inner_dims = outer_dims - wall
 
     outer = _skull_shape(*outer_dims, subdivisions=4)
-    inner = _skull_shape(*inner_dims, subdivisions=4)
+    # A casca interna sempre tem relief occipital (capacete pediátrico
+    # nunca encosta na nuca direto — ali é a zona que mais cresce).
+    # Quando há condition_type + side + cvai, intensifica o relief no
+    # lado achatado; sem isso, aplica relief simétrico padrão.
+    inner = _skull_shape(
+        *inner_dims, subdivisions=4,
+        relief_occipital=True,
+        affected_side=affected_side,
+        cvai=float(cvai) if cvai is not None else None,
+        wall=wall,
+    )
 
     helmet = difference([outer, inner])
 
@@ -92,34 +104,86 @@ def generate_from_measurements(m: dict) -> trimesh.Trimesh:
                 except ValueError:
                     pass
 
-    # Pós-processamento: suavização leve de Taubin para arredondar
-    # todas as arestas remanescentes — juncão chamfer↔casca,
-    # bordas horizontais dos plates, junção pescoço↔cabeça do pino
-    # cogumelo. Filtro Taubin (lamb positivo, nu negativo) preserva
-    # volume melhor que Laplaciano puro — capacete não encolhe.
-    # iterations=2 dá fillets visualmente suaves sem perder precisão.
-    helmet = _smooth_final(helmet)
-
+    # Pós-processamento em duas etapas:
+    # 1) Taubin global (lamb+, nu-) preserva volume — arredonda junções
+    #    do tipo casca↔chanfro, junção pescoço↔cabeça do pino cogumelo.
+    # 2) Smoothing local intenso nos vértices das bordas abertas
+    #    (perímetros de aberturas: trim, arch, ear, slots). Sem isso
+    #    a borda interna do corte fica viva e arranha o couro cabeludo.
+    helmet = _smooth_final(helmet, iterations=4)
+    helmet = _fillet_open_edges(helmet, iterations=4, factor=0.35, ring_depth=2)
     return helmet
 
 
-def _smooth_final(mesh: trimesh.Trimesh, iterations: int = 2) -> trimesh.Trimesh:
+def _smooth_final(mesh: trimesh.Trimesh, iterations: int = 4) -> trimesh.Trimesh:
     """
-    Aplica Taubin smoothing (preserva volume melhor que Laplaciano puro).
-    Aceita meshes com aberturas — o capacete final tem trim, frontal arch
-    e ear holes, então frequentemente não é watertight, o que é esperado.
-    Só rejeita o resultado se o filtro produzir mesh degenerada (sem faces).
+    Taubin smoothing global. Volume-preserving (lamb+, nu-) — capacete
+    não encolhe perceptivelmente em até ~6 iterações. Aceita meshes
+    com aberturas (capacete final tem trim/arch/ear holes).
     """
     try:
         smoothed = mesh.copy()
         trimesh.smoothing.filter_taubin(
-            smoothed, lamb=0.5, nu=-0.53, iterations=iterations,
+            smoothed, lamb=0.55, nu=-0.58, iterations=iterations,
         )
         if len(smoothed.faces) > 0 and len(smoothed.vertices) > 0:
             return smoothed
     except Exception:
         pass
     return mesh
+
+
+def _fillet_open_edges(
+    mesh: trimesh.Trimesh,
+    iterations: int = 4,
+    factor: float = 0.35,
+    ring_depth: int = 2,
+) -> trimesh.Trimesh:
+    """
+    Fillet local nas bordas abertas. Identifica arestas usadas por
+    apenas 1 face (perímetros das aberturas), expande para um anel
+    de ring_depth vizinhos, e aplica Laplacian relaxation só nesses
+    vértices. Resultado: bordas dos cortes ficam arredondadas, o
+    centro da casca permanece intacto.
+    """
+    if len(mesh.faces) == 0:
+        return mesh
+
+    edges_sorted = np.sort(mesh.edges, axis=1)
+    unique, counts = np.unique(edges_sorted, axis=0, return_counts=True)
+    boundary_edges = unique[counts == 1]
+    if len(boundary_edges) == 0:
+        return mesh
+
+    n = len(mesh.vertices)
+    # Adjacência v→vizinhos (vetorizado a partir das faces)
+    adjacency = [set() for _ in range(n)]
+    for f in mesh.faces:
+        a, b, c = int(f[0]), int(f[1]), int(f[2])
+        adjacency[a].update((b, c))
+        adjacency[b].update((a, c))
+        adjacency[c].update((a, b))
+
+    affected = set(int(v) for v in np.unique(boundary_edges))
+    for _ in range(ring_depth):
+        new_affected = set(affected)
+        for v in affected:
+            new_affected.update(adjacency[v])
+        affected = new_affected
+    affected_arr = np.array(sorted(affected), dtype=np.int64)
+
+    out = mesh.copy()
+    verts = out.vertices.copy()
+    for _ in range(iterations):
+        new_pos = verts.copy()
+        for vid in affected_arr:
+            neigh = list(adjacency[vid])
+            if neigh:
+                avg = verts[neigh].mean(axis=0)
+                new_pos[vid] = (1 - factor) * verts[vid] + factor * avg
+        verts = new_pos
+    out.vertices = verts
+    return out
 
 
 def generate_from_scan(
@@ -219,7 +283,8 @@ def generate_from_scan(
             except ValueError:
                 pass
 
-    helmet = _smooth_final(helmet)
+    helmet = _smooth_final(helmet, iterations=4)
+    helmet = _fillet_open_edges(helmet, iterations=4, factor=0.35, ring_depth=2)
     return helmet
 
 
@@ -410,13 +475,24 @@ def _top_trim_line_from_landmarks(condition_type: str, landmarks: dict):
 # Anatomia (B)
 # ---------------------------------------------------------------------------
 
-def _skull_shape(ax, ay, az, subdivisions=4) -> trimesh.Trimesh:
+def _skull_shape(
+    ax, ay, az, subdivisions=4,
+    relief_occipital: bool = False,
+    affected_side: str | None = None,
+    cvai: float | None = None,
+    wall: float = 3.0,
+) -> trimesh.Trimesh:
     """
     Forma ovóide com warp anatômico:
       - testa elevada (frente +x mais alta no topo)
       - occipital arredondado
       - têmporas levemente côncavas em z médio
-    Comparado a uma elipsoide pura, sente-se mais como uma cabeça.
+
+    Quando relief_occipital=True (uso interno do capacete), aplica warp
+    adicional puxando o occipital pra dentro = mais espaço entre casca
+    interna e a nuca real do bebê. Sem isso, o capacete marcaria a nuca.
+    Se cvai+affected_side fornecidos, intensifica relief assimétrico no
+    lado achatado (Argenta).
     """
     sphere = trimesh.creation.icosphere(subdivisions=subdivisions)
     v = sphere.vertices.copy()
@@ -425,7 +501,6 @@ def _skull_shape(ax, ay, az, subdivisions=4) -> trimesh.Trimesh:
     v *= np.array([ax, ay, az])
 
     # warp 1: testa elevada (+x correlaciona com +z)
-    # vertices na frente (x positivo) ficam um pouco mais altos
     front = np.clip(v[:, 0] / ax, -1, 1)
     v[:, 2] += np.maximum(front, 0) * az * 0.10
 
@@ -434,11 +509,40 @@ def _skull_shape(ax, ay, az, subdivisions=4) -> trimesh.Trimesh:
     v[:, 0] -= np.maximum(back, 0) ** 2 * ax * 0.06
 
     # warp 3: têmporas levemente côncavas em z médio
-    # |y| grande + z médio → puxa pra dentro
     z_norm = v[:, 2] / az
     side = np.abs(v[:, 1]) / ay
-    temple = side * np.exp(-(z_norm * 2.5) ** 2)  # gaussian em z=0
+    temple = side * np.exp(-(z_norm * 2.5) ** 2)
     v[:, 1] *= 1 - temple * 0.04
+
+    if relief_occipital:
+        # Relief simétrico padrão: occipital recuado em direção ao
+        # centro. Garante que a nuca encontra ar, não casca. Banda em
+        # z em torno do equador (onde a nuca encosta no apoio).
+        nx = v[:, 0] / max(ax, 1e-6)
+        nz = v[:, 2] / max(az, 1e-6)
+        # expoente menor → relief mais distribuído (sente como camada
+        # contínua de ar atrás, não só num pontinho central)
+        posterior = np.maximum(-nx, 0) ** 1.2
+        z_band = np.exp(-((nz - 0.05) ** 2) / 0.5)
+        relief_base = wall * 0.7        # ~2mm com wall=3mm
+        v[:, 0] += posterior * z_band * relief_base   # puxa pra +x = pra dentro
+
+        # Relief assimétrico se condition + side + cvai disponíveis
+        if affected_side in ("left", "right") and cvai is not None and cvai >= 1.0:
+            if cvai < 3.5:
+                extra = wall * 0.5
+            elif cvai < 6.5:
+                extra = wall * 0.9
+            elif cvai < 8.75:
+                extra = wall * 1.4
+            else:
+                extra = wall * 1.8
+            ny = v[:, 1] / max(ay, 1e-6)
+            sign = +1 if affected_side == "right" else -1
+            # expoente baixo → o lado afetado todo recebe relief, não
+            # só vértices muito laterais
+            side_field = np.maximum(sign * ny, 0) ** 0.8
+            v[:, 0] += posterior * z_band * side_field * extra
 
     sphere.vertices = v
     return sphere
@@ -784,17 +888,23 @@ def _top_trim_line(condition_type, outer_dims):
 
 def _bottom_chamfer_cutter(outer_dims):
     """
-    Caixa larga inclinada que remove a borda viva inferior, criando
-    um chanfro contínuo ao redor do capacete.
+    Cutter inferior: combinação de uma elipsoide grande embaixo
+    (curvatura suave que arredonda a borda) com uma caixa que remove
+    todo o material abaixo. A elipsoide cria filete contínuo na borda
+    inferior, sem aresta diagonal — inspirado em forma de bacia.
     """
     ax, ay, az = outer_dims
-    box = trimesh.creation.box(extents=(ax * 4, ay * 4, az * 0.8))
-    # rota leve pra criar inclinação (chanfro)
-    R = trimesh.transformations.rotation_matrix(np.deg2rad(8), [0, 1, 0])
-    box.apply_transform(R)
-    # posiciona logo abaixo do capacete, encostando na borda
-    box.apply_translation([0, 0, -az * 1.18])
-    return box
+    # Elipsoide enorme vinda de baixo, raio Z bem menor pra dar fillet
+    bowl = trimesh.creation.icosphere(subdivisions=3)
+    bowl.vertices = bowl.vertices * np.array([ax * 1.6, ay * 1.6, az * 0.55])
+    bowl.apply_translation([0, 0, -az * 0.95])
+    # Caixa que remove tudo abaixo da elipsoide pra garantir clearance
+    box = trimesh.creation.box(extents=(ax * 4, ay * 4, az * 1.2))
+    box.apply_translation([0, 0, -az * 1.6])
+    try:
+        return union([bowl, box])
+    except Exception:
+        return bowl
 
 
 # ---------------------------------------------------------------------------
