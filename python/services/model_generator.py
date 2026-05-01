@@ -22,6 +22,33 @@ import trimesh
 from trimesh.boolean import difference, union
 
 
+# ============================================================
+# Parâmetros mestres do fechamento Ottobock MyCRO
+# Spec source of truth: docs/referencias/3D Capacete Craniano/
+# Fator de escala 0.7 aplicado para adaptar capacete adulto → pediátrico
+# (Pedro: bbox ~165×152×110mm vs adulto típico ~190×180×180mm)
+# ============================================================
+MYCRO_ESP_ABA = 3.0          # espessura abas (não escala — mín. impressão 3D)
+MYCRO_COMP_ABA = 35.0        # comprimento das abas (50 × 0.7)
+MYCRO_LARG_ABA_A = 13.0      # largura aba A (fenda)
+MYCRO_LARG_ABA_B = 15.0      # largura aba B (pinos)
+MYCRO_COMP_FENDA = 17.0      # comprimento da fenda na aba A
+MYCRO_LARG_FENDA = 4.5       # largura da fenda na aba A
+MYCRO_DIST_PINOS = 20.0      # distância entre eixos B1↔B2
+MYCRO_LARG_B1 = 4.0          # largura pino retangular B1
+MYCRO_COMP_B1 = 6.0          # comprimento pino retangular B1
+MYCRO_ALT_B1 = 6.0           # altura pino B1 (mantém — cordão precisa altura)
+MYCRO_DIAM_B2 = 6.0          # diâmetro pino cilíndrico B2
+MYCRO_ALT_B2 = 6.0           # altura pino B2
+MYCRO_RESSALTO_CABECA = 0.5  # ressalto cabeça em cogumelo
+MYCRO_ALT_CABECA = 1.5       # altura da porção alargada da cabeça
+MYCRO_COMP_FURO_E = 6.0      # comprimento do furo passante E
+MYCRO_LARG_FURO_E = 5.0      # largura do furo E (alargado pra acomodar nó do cordão)
+MYCRO_CHANFRO_E = 0.5        # chanfro nas bordas do furo (anti-abrasão)
+MYCRO_FILLET_BASE = 1.0      # fillet na base dos pinos
+MYCRO_FILLET_TOPO = 0.5      # fillet no topo dos pinos
+
+
 # ---------------------------------------------------------------------------
 # Geração paramétrica
 # ---------------------------------------------------------------------------
@@ -757,6 +784,275 @@ def _anchor_pin(y_pos, z_pos, side='front', helmet_mesh=None,
     return pin
 
 
+def _stadium_plate(comp, larg, esp):
+    """
+    Forma de estádio (retângulo + 2 semicírculos), extrudada em Y.
+    Eixos: comp em X (axial), esp em Y (radial-out), larg em Z (tangencial).
+    Watertight via union(box, 2 cilindros).
+    """
+    raio = larg / 2.0
+    comp_box = max(0.001, comp - larg)
+    main = trimesh.creation.box(extents=[comp_box, esp, larg])
+    R_zy = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
+    end_l = trimesh.creation.cylinder(radius=raio, height=esp, sections=32)
+    end_l.apply_transform(R_zy)
+    end_l.apply_translation([-comp_box / 2.0, 0, 0])
+    end_r = trimesh.creation.cylinder(radius=raio, height=esp, sections=32)
+    end_r.apply_transform(R_zy)
+    end_r.apply_translation([+comp_box / 2.0, 0, 0])
+    try:
+        return union([main, end_l, end_r], engine="manifold")
+    except Exception:
+        try:
+            return union([main, end_l, end_r])
+        except Exception:
+            return main
+
+
+def _mushroom_pin_cyl(diam_base, diam_head, alt_total, alt_head):
+    """
+    Pino cilíndrico com cabeça em cogumelo. Eixo do pino = +Y_local.
+    Base em y=0, cabeça em y=alt_total.
+    """
+    alt_corpo = alt_total - alt_head
+    R_zy = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
+    corpo = trimesh.creation.cylinder(
+        radius=diam_base / 2.0, height=alt_corpo, sections=32,
+    )
+    corpo.apply_transform(R_zy)
+    corpo.apply_translation([0, alt_corpo / 2.0, 0])
+    cabeca = trimesh.creation.cylinder(
+        radius=diam_head / 2.0, height=alt_head, sections=32,
+    )
+    cabeca.apply_transform(R_zy)
+    cabeca.apply_translation([0, alt_corpo + alt_head / 2.0, 0])
+    try:
+        return union([corpo, cabeca], engine="manifold")
+    except Exception:
+        try:
+            return union([corpo, cabeca])
+        except Exception:
+            return corpo
+
+
+def _mushroom_pin_rect(larg, comp, alt_total, ressalto, alt_head):
+    """
+    Pino retangular com cabeça em cogumelo (alargada por `ressalto` em
+    cada direção). Eixo do pino = +Y_local. Base em y=0.
+    """
+    alt_corpo = alt_total - alt_head
+    corpo = trimesh.creation.box(extents=[comp, alt_corpo, larg])
+    corpo.apply_translation([0, alt_corpo / 2.0, 0])
+    cabeca = trimesh.creation.box(extents=[
+        comp + 2 * ressalto, alt_head, larg + 2 * ressalto,
+    ])
+    cabeca.apply_translation([0, alt_corpo + alt_head / 2.0, 0])
+    try:
+        return union([corpo, cabeca], engine="manifold")
+    except Exception:
+        try:
+            return union([corpo, cabeca])
+        except Exception:
+            return corpo
+
+
+def _aba_a_slot(y_pos, z_pos, side='front', helmet_mesh=None,
+                comp=MYCRO_COMP_ABA, larg=MYCRO_LARG_ABA_A, esp=MYCRO_ESP_ABA,
+                comp_fenda=MYCRO_COMP_FENDA, larg_fenda=MYCRO_LARG_FENDA,
+                wall_thickness=3.0):
+    """
+    Aba A (Ottobock MyCRO): aba de estádio "solidária" à casca, com
+    fenda oval passante. A aba é uma extensão integrada da parede:
+    ocupa toda a espessura da parede (`wall_thickness`) + uma
+    saliência externa de altura `esp`. Por isso NÃO cria elevação no
+    lado interno do capacete — a face interna da aba coincide com a
+    face interna da casca.
+
+    Geometria total: comp × larg × (wall + esp).
+    Saliência externa visível: `esp` mm.
+    Fenda oval passante atravessa a aba inteira (cordão passa por aqui).
+    """
+    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
+    if norm < 1e-3:
+        return None
+    ny, nz = y_pos / norm, z_pos / norm
+    angle = np.arctan2(nz, ny)
+    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+
+    cx_center = (
+        +comp / 2 + 1.0 if side == 'front'
+        else -comp / 2 - 1.0
+    )
+    if helmet_mesh is not None:
+        hit = _surface_radial_hit(helmet_mesh, ny, nz, x_query=cx_center)
+        y_surf, z_surf = (hit if hit is not None else (y_pos, z_pos))
+    else:
+        y_surf, z_surf = y_pos, z_pos
+
+    # Aba ocupa toda a parede (wall_thickness) + saliência (esp).
+    # Frame local: base interna em y=0, topo externo em y=wall+esp.
+    h_total = wall_thickness + esp
+    aba = _stadium_plate(comp, larg, h_total)
+    aba.apply_translation([0, h_total / 2.0, 0])
+
+    # Fenda passante em toda a altura da aba (atravessa wall+esp +1mm
+    # de folga pra Cut Through).
+    fenda = _stadium_plate(comp_fenda, larg_fenda, h_total + 1.0)
+    fenda.apply_translation([0, (h_total + 1.0) / 2.0, 0])
+    try:
+        aba = difference([aba, fenda], engine="manifold")
+    except Exception:
+        try:
+            aba = difference([aba, fenda])
+        except Exception:
+            pass
+
+    try:
+        aba.process(validate=True)
+        if not aba.is_watertight:
+            trimesh.repair.fill_holes(aba)
+        trimesh.repair.fix_normals(aba)
+    except Exception:
+        pass
+
+    # Posicionamento: base interna da aba em y_surf - wall (= face
+    # interna da casca local), topo externo em y_surf + esp.
+    # SEM saliência no lado interno: a face interna da aba e da casca
+    # são coplanares (continuam a parede sem ressalto pra dentro).
+    y_anchor = y_surf - ny * wall_thickness
+    z_anchor = z_surf - nz * wall_thickness
+    aba.apply_transform(R)
+    aba.apply_translation([cx_center, y_anchor, z_anchor])
+    return aba
+
+
+def _aba_b_pins(y_pos, z_pos, side='back', helmet_mesh=None,
+                comp=MYCRO_COMP_ABA, larg=MYCRO_LARG_ABA_B, esp=MYCRO_ESP_ABA,
+                dist_pinos=MYCRO_DIST_PINOS,
+                comp_b1=MYCRO_COMP_B1, larg_b1=MYCRO_LARG_B1, alt_b1=MYCRO_ALT_B1,
+                diam_b2=MYCRO_DIAM_B2, alt_b2=MYCRO_ALT_B2,
+                ressalto=MYCRO_RESSALTO_CABECA, alt_cabeca=MYCRO_ALT_CABECA,
+                wall_thickness=3.0):
+    """
+    Aba B (Ottobock MyCRO): aba de estádio "solidária" à casca, com 2
+    pinos cogumelo. Igual à aba A, ocupa toda a parede + saliência.
+      - B1: retangular comp_b1×larg_b1, à esquerda (X=-dist_pinos/2)
+      - B2: cilíndrico ⌀diam_b2, à direita (X=+dist_pinos/2)
+    Cordão elástico contorna B1 e B2 externamente.
+    """
+    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
+    if norm < 1e-3:
+        return None
+    ny, nz = y_pos / norm, z_pos / norm
+    angle = np.arctan2(nz, ny)
+    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+
+    cx_center = (
+        +comp / 2 + 1.0 if side == 'front'
+        else -comp / 2 - 1.0
+    )
+    if helmet_mesh is not None:
+        hit = _surface_radial_hit(helmet_mesh, ny, nz, x_query=cx_center)
+        y_surf, z_surf = (hit if hit is not None else (y_pos, z_pos))
+    else:
+        y_surf, z_surf = y_pos, z_pos
+
+    # Aba ocupa parede + saliência (igual aba A — sem elevação interna)
+    h_total = wall_thickness + esp
+    aba = _stadium_plate(comp, larg, h_total)
+    aba.apply_translation([0, h_total / 2.0, 0])
+
+    # Pinos saem do topo externo da aba (y=h_total) com overlap de
+    # 0.5mm pra fundir via union (tangente sem overlap não funde).
+    plate_top = h_total
+    overlap = 0.5
+
+    # Pino B1 (retangular, X negativo)
+    b1 = _mushroom_pin_rect(larg_b1, comp_b1, alt_b1, ressalto, alt_cabeca)
+    b1.apply_translation([-dist_pinos / 2.0, plate_top - overlap, 0])
+    try:
+        aba = union([aba, b1], engine="manifold")
+    except Exception:
+        try:
+            aba = union([aba, b1])
+        except Exception:
+            pass
+
+    # Pino B2 (cilíndrico, X positivo)
+    b2 = _mushroom_pin_cyl(diam_b2, diam_b2 + 2 * ressalto, alt_b2, alt_cabeca)
+    b2.apply_translation([+dist_pinos / 2.0, plate_top - overlap, 0])
+    try:
+        aba = union([aba, b2], engine="manifold")
+    except Exception:
+        try:
+            aba = union([aba, b2])
+        except Exception:
+            pass
+
+    try:
+        aba.process(validate=True)
+        if not aba.is_watertight:
+            trimesh.repair.fill_holes(aba)
+        trimesh.repair.fix_normals(aba)
+    except Exception:
+        pass
+
+    # Posicionamento: base interna da aba em y_surf - wall (= face
+    # interna da casca local), sem saliência interna.
+    y_anchor = y_surf - ny * wall_thickness
+    z_anchor = z_surf - nz * wall_thickness
+    aba.apply_transform(R)
+    aba.apply_translation([cx_center, y_anchor, z_anchor])
+    return aba
+
+
+def _furo_e_cutter(y_pos, z_pos, side='back', helmet_mesh=None,
+                    comp_furo=MYCRO_COMP_FURO_E, larg_furo=MYCRO_LARG_FURO_E,
+                    chanfro=MYCRO_CHANFRO_E):
+    """
+    Cutter para o furo passante E na casca: slot oval que atravessa a
+    parede da casca (cordão entra/sai). Posicionado próximo da aba B
+    para que o cordão saia perto dos pinos B1/B2.
+
+    O "pino interno D" da spec original (saliência interna) NÃO é
+    impresso (opção 2-b escolhida): o cordão atravessa o furo E,
+    dá nó na ponta interna, e o nó (maior que larg_furo) retém o
+    cordão pelo lado interno da casca. Furo E foi alargado para 5mm
+    pra acomodar o nó.
+    """
+    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
+    if norm < 1e-3:
+        return None
+    ny, nz = y_pos / norm, z_pos / norm
+    angle = np.arctan2(nz, ny)
+    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+
+    # Furo posicionado axialmente DENTRO da peça (não no plano de corte)
+    # entre os pinos B1 e B2 (X local = 0, no centro da aba B)
+    cx_center = (
+        +MYCRO_COMP_ABA / 2 + 1.0 if side == 'front'
+        else -MYCRO_COMP_ABA / 2 - 1.0
+    )
+    if helmet_mesh is not None:
+        hit = _surface_radial_hit(helmet_mesh, ny, nz, x_query=cx_center)
+        y_surf, z_surf = (hit if hit is not None else (y_pos, z_pos))
+    else:
+        y_surf, z_surf = y_pos, z_pos
+
+    # Slot oval atravessando a casca (radial-in/out)
+    # Comprimento total = atravessar wall=3mm + folga, ~10mm
+    h_total = 12.0
+    cutter = _stadium_plate(comp_furo, larg_furo, h_total)
+    # base do cutter em y=0 (= centro radial); estende ±h_total/2
+    cutter.apply_translation([0, 0, 0])
+
+    # Posiciona o cutter centrado na superfície (y_surf) — atravessa
+    # a parede tanto pra dentro como pra fora
+    cutter.apply_transform(R)
+    cutter.apply_translation([cx_center, y_surf, z_surf])
+    return cutter
+
+
 def _loop_post_plate(y_pos, z_pos, side='front', helmet_mesh=None,
                       plate_length=28.0, plate_thickness=4.5, plate_width=14.0,
                       slot_offset_axial=-7.0,
@@ -1176,7 +1472,7 @@ def split_into_two_parts(
     helmet: trimesh.Trimesh,
     outer_dims,
     pin_count: int = 2,
-    closure_type: str = "loop_post",
+    closure_type: str = "mycro",
     use_slide_latch: bool = True,           # legado, lido se closure_type='slide_latch'
     pin_radius: float = 2.5,                # parafuso M5 (modo legado)
     lug_extension: float = 14.0,
@@ -1188,13 +1484,15 @@ def split_into_two_parts(
     coronal (YZ em x=0).
 
     closure_type:
-      'loop_post' (padrão) — sistema Ottobock MyCRO Band: plate
-        retangular com slot oval dividido por barra transversal
-        ("pino interno com furo passante") + 2 pinos cogumelo
-        externos (posts). Cordão elástico em loop fechado contorna
-        a barra interna, sai pelo slot, contorna os 2 posts.
-        Tensão do cordão mantém o fechamento. Cordão é consumível
-        substituível pelo cuidador, sem ferramenta.
+      'mycro' (padrão) — sistema Ottobock MyCRO conforme spec em
+        docs/referencias/3D Capacete Craniano/. Cada lateral D/E
+        recebe:
+          - Aba A (estádio 35×13×3mm + fenda 17×4.5mm) na peça FRONTAL
+          - Aba B (estádio 35×15×3mm + 2 pinos cogumelo) na peça TRASEIRA
+          - Furo E (slot 6×5mm passante na casca traseira) entre os pinos
+        Pino interno D não é impresso (opção 2-b): cordão dá nó na
+        sobra interna, nó retém pelo lado interno do furo E.
+      'loop_post' — alias do 'mycro' por compatibilidade.
       'snap_pin' — só o pino cogumelo direto na carcaça.
       'slide_buckle' — fivela slide com 2 fendas e barra central
         na peça traseira + âncora de tira (D-ring) na peça frontal.
@@ -1236,33 +1534,41 @@ def split_into_two_parts(
     # mesmo com closure_type padrão; útil pra clientes antigos da API)
     effective_closure = closure_type
     if effective_closure not in (
-        "loop_post", "hybrid_plate", "snap_pin",
+        "mycro", "loop_post", "hybrid_plate", "snap_pin",
         "slide_buckle", "slide_latch", "simple",
     ):
-        effective_closure = "loop_post"
+        effective_closure = "mycro"
     if use_slide_latch is False and effective_closure == "slide_latch":
         effective_closure = "simple"
 
     # Adiciona os fechos a cada metade independentemente
     for (y_surf, z_surf) in lug_layout:
-        if effective_closure in ("loop_post", "hybrid_plate"):
-            # Sistema Ottobock MyCRO "elastic loop & post": plate com
-            # slot dividido por barra transversal + 2 pinos externos
-            # em cada peça. Cordão elástico contorna tudo em loop.
-            plate_f = _loop_post_plate(y_surf, z_surf, side='front', helmet_mesh=helmet)
-            plate_b = _loop_post_plate(y_surf, z_surf, side='back',  helmet_mesh=helmet)
-            if plate_f is None or plate_b is None:
+        if effective_closure in ("mycro", "loop_post", "hybrid_plate"):
+            # Sistema Ottobock MyCRO conforme spec:
+            #   Aba A (com fenda)        → peça FRONTAL
+            #   Aba B (com pinos B1+B2)  → peça TRASEIRA
+            #   Furo E passante          → casca da peça traseira
+            # Cordão elástico em loop fechado: ancorado por nó interno,
+            # atravessa furo E, contorna B1+B2, volta pela fenda da
+            # aba A da peça contralateral.
+            aba_a = _aba_a_slot(y_surf, z_surf, side='front', helmet_mesh=helmet)
+            aba_b = _aba_b_pins(y_surf, z_surf, side='back', helmet_mesh=helmet)
+            furo_e = _furo_e_cutter(y_surf, z_surf, side='back', helmet_mesh=helmet)
+            if aba_a is None or aba_b is None:
                 continue
-            # check_volume=False permite union mesmo se plate sai do
-            # encadeamento de booleans em estado degenerado.
             try:
-                front_part = union([front_part, plate_f], check_volume=False)
+                front_part = union([front_part, aba_a], check_volume=False)
             except Exception:
                 pass
             try:
-                back_part = union([back_part, plate_b], check_volume=False)
+                back_part = union([back_part, aba_b], check_volume=False)
             except Exception:
                 pass
+            if furo_e is not None:
+                try:
+                    back_part = difference([back_part, furo_e])
+                except Exception:
+                    pass
         elif effective_closure == "snap_pin":
             # MyCRO: pino direto na carcaça externa de cada metade.
             # Pino de cada peça é deslocado axialmente em ±8mm para

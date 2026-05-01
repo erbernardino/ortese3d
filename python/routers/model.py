@@ -127,7 +127,7 @@ def split_helmet_endpoint(data: dict):
         result = split_into_two_parts(
             helmet, outer_dims,
             pin_count=int(data.get("pin_count", 2)),
-            closure_type=data.get("closure_type", "loop_post"),
+            closure_type=data.get("closure_type", "mycro"),
             pin_radius=float(data.get("pin_radius_mm", 2.5)),
             lug_extension=float(data.get("lug_extension_mm", 14.0)),
             lug_thickness=float(data.get("lug_thickness_mm", 6.0)),
