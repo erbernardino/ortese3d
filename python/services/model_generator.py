@@ -605,24 +605,52 @@ def _rounded_plate(thickness, extension, width, sections=16):
     return plate
 
 
-def _anchor_pin(y_pos, z_pos, side='front',
-                base_radius=4.5, neck_radius=2.5, head_radius=4.5,
-                base_height=2.0, neck_length=3.5, head_length=2.5):
+def _surface_radial_hit(mesh: trimesh.Trimesh, y_dir: float, z_dir: float,
+                         x_query: float = 0.0):
     """
-    Pino de engate (anchor pin) tipo cogumelo, integrado direto à
-    superfície externa da carcaça. Sistema MyCRO Band: a tira
-    elástica (item separado, não impresso) tem um clipe na ponta
-    com fenda interna que abraça o pino por pressão (snap-fit).
-    O travamento é mantido pela tensão da tira elástica.
+    Ray cast radial-in para encontrar a interseção real da superfície
+    externa do mesh no meridiano (y_dir, z_dir) num plano x=x_query.
+    Retorna (y_hit, z_hit) ou None se não atingir nada.
+    """
+    norm = (y_dir ** 2 + z_dir ** 2) ** 0.5
+    if norm < 1e-6:
+        return None
+    ny, nz = y_dir / norm, z_dir / norm
+    # Origem bem fora do capacete na direção radial
+    bbox = mesh.bounds
+    far = max(abs(bbox[0]).max(), abs(bbox[1]).max()) * 2 + 50
+    origin = np.array([[x_query, ny * far, nz * far]])
+    direction = np.array([[0.0, -ny, -nz]])
+    locs, _, _ = mesh.ray.intersects_location(
+        origin, direction, multiple_hits=False,
+    )
+    if len(locs) == 0:
+        return None
+    return float(locs[0][1]), float(locs[0][2])
 
-    Eixo do pino = direção radial-out (sai pra fora da carcaça).
-    Geometria:
-      base   : cilindro curto (transição suave casca → pino)
-      neck   : cilindro fino (onde o clipe abraça)
-      head   : cilindro maior (segura o clipe contra a tensão)
 
-    side='front' posiciona em x≈0 levemente positivo; 'back'
-    em x≈0 levemente negativo (não causa overlap entre peças).
+def _anchor_pin(y_pos, z_pos, side='front', helmet_mesh=None,
+                base_radius=4.5, neck_radius=2.5, head_radius=4.5,
+                base_height=2.0, neck_length=3.5, head_length=2.5,
+                axial_offset_mm=8.0):
+    """
+    Pino de engate tipo cogumelo, integrado à superfície externa da
+    carcaça. Sistema MyCRO Band: a tira elástica (item separado) tem
+    um clipe na ponta com fenda interna que abraça o pino por
+    pressão. O travamento é mantido pela tensão da tira.
+
+    Posicionamento crítico:
+      - Eixo radial-out: o pino sai pra fora (não pra dentro). A base
+        é achatada contra a superfície externa real (via ray-cast)
+        para que NUNCA invada o interior da casca.
+      - Eixo axial (X): o pino é deslocado por axial_offset_mm para
+        dentro da própria peça (front ou back), evitando que invada
+        a contra-peça quando juntas.
+
+    helmet_mesh: o mesh do capacete inteiro, usado para ray-cast e
+        encontrar a superfície externa real. Quando None, usa
+        (y_pos, z_pos) diretamente como a posição da superfície
+        (fallback para casos sem mesh).
     """
     norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
     if norm < 0.001:
@@ -631,24 +659,37 @@ def _anchor_pin(y_pos, z_pos, side='front',
     angle = np.arctan2(nz, ny)
     R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
 
-    # Frame local: eixo Y_local = radial-out (pino sai pra fora).
-    # Construo cilindros em Z e roto Z→Y_local.
-    R_zy = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
-    # +90° em X leva +Z → -Y; -90° em X leva +Z → +Y. Quero +Y.
+    # Posição axial dentro da peça (não no plano de corte)
+    cx = +axial_offset_mm if side == 'front' else -axial_offset_mm
+
+    # Posição radial real: ray-cast na superfície externa do casco
+    # no plano x=cx para evitar que o pino atravesse para o interior.
+    if helmet_mesh is not None:
+        hit = _surface_radial_hit(helmet_mesh, ny, nz, x_query=cx)
+        if hit is not None:
+            y_surf, z_surf = hit
+        else:
+            y_surf, z_surf = y_pos, z_pos
+    else:
+        y_surf, z_surf = y_pos, z_pos
+
+    # Frame local: eixo Y_local = radial-out (pino sai para fora).
+    # Cilindros em Z, depois rotação Z→+Y_local (-90° em X).
     R_zy = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
 
+    # Para garantir ancoragem sem furar interno, colocamos a base
+    # ligeiramente "encostada" na superfície real: começo da base em
+    # y_local=0 (= y_surf), fim da base em y_local=+base_height.
+    # Como a casca tem espessura wall, a base só ocupa fora dela.
     parts = []
-    # base: começa em Y_local=0, vai até Y_local=base_height
     base = trimesh.creation.cylinder(radius=base_radius, height=base_height, sections=20)
     base.apply_transform(R_zy)
     base.apply_translation([0, base_height / 2, 0])
     parts.append(base)
-    # neck: continua acima da base
     neck = trimesh.creation.cylinder(radius=neck_radius, height=neck_length, sections=16)
     neck.apply_transform(R_zy)
     neck.apply_translation([0, base_height + neck_length / 2, 0])
     parts.append(neck)
-    # head: cilindro maior na ponta
     head = trimesh.creation.cylinder(radius=head_radius, height=head_length, sections=20)
     head.apply_transform(R_zy)
     head.apply_translation([0, base_height + neck_length + head_length / 2, 0])
@@ -661,59 +702,16 @@ def _anchor_pin(y_pos, z_pos, side='front',
         except Exception:
             continue
 
-    # Aplica rotação radial + posiciona na superfície da carcaça
+    # Pequena penetração radial-in para garantir intersecção sólida
+    # com a casca quando feito union (se não, gap mata a soldagem).
+    # 0.5mm é menor que a espessura da parede, não cria elevação interna.
+    radial_inset = 0.5
+    y_anchor = y_surf - ny * radial_inset
+    z_anchor = z_surf - nz * radial_inset
+
     pin.apply_transform(R)
-    # Pequeno offset em X para evitar splits indesejados quando pino
-    # é unido à peça frontal/traseira (lugar perto do plano de corte)
-    cx = +0.5 if side == 'front' else -0.5
-    pin.apply_translation([cx, y_pos, z_pos])
+    pin.apply_translation([cx, y_anchor, z_anchor])
     return pin
-
-
-def _guide_groove_cutter(y_pos, z_pos, length_axial=22.0, depth=1.2,
-                          width_tangential=10.0, side='front'):
-    """
-    Canal de guia (rebaixo): cápsula rasa na superfície externa que
-    guia a tira lateralmente, evitando deslocamento. O canal corre
-    no eixo X (axial = direção do split frente↔trás).
-
-    Eixo da cápsula: X (axial). Dimensões locais:
-      length_axial      → comprimento na direção do split (X)
-      depth             → profundidade radial-in (entra na casca)
-      width_tangential  → largura tangencial (Z_local)
-    """
-    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
-    if norm < 0.001:
-        return None
-    ny, nz = y_pos / norm, z_pos / norm
-    angle = np.arctan2(nz, ny)
-    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
-
-    # Cápsula em Z (eixo longo), depois roda Z→X (axial)
-    cap = trimesh.creation.capsule(
-        radius=width_tangential / 2,
-        height=max(0.001, length_axial - width_tangential),
-        count=[12, 12],
-    )
-    R_zx = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
-    cap.apply_transform(R_zx)
-    # Achata no eixo radial-out (Y_local) para virar canal raso
-    # depois de aplicar R, então fazemos no frame local antes
-    # multiplicando vertices.
-    flat = depth / max(1e-6, width_tangential / 2)
-    # No frame local: eixo radial-out é Y. Após R_zx, capsule está
-    # com eixo X axial; suas dimensões Y/Z (= largura/altura) são
-    # ainda Y/Z. Achata Y para profundidade desejada.
-    cap.vertices[:, 1] *= flat
-
-    # Posiciona: centro da capsule fica na superfície (y_pos, z_pos);
-    # como achatamos em Y, o canal entra apenas `depth` na casca
-    cap.apply_transform(R)
-    # Pequeno offset axial para o canal terminar no plano de corte;
-    # x=±length/3 desloca o canal para o interior da peça
-    side_x = +length_axial / 3 if side == 'front' else -length_axial / 3
-    cap.apply_translation([side_x, y_pos, z_pos])
-    return cap
 
 
 def _strap_anchor(y_pos, z_pos, lug_thickness=6.0, lug_extension=14.0,
@@ -1021,10 +1019,18 @@ def split_into_two_parts(
     for (y_surf, z_surf) in lug_layout:
         if effective_closure == "snap_pin":
             # MyCRO: pino direto na carcaça externa de cada metade.
-            # Cada peça (frontal e traseira) recebe seu próprio pino;
-            # uma tira elástica externa conecta os pinos D↔D e E↔E.
-            pin_front = _anchor_pin(y_surf, z_surf, side='front')
-            pin_back = _anchor_pin(y_surf, z_surf, side='back')
+            # Pino de cada peça é deslocado axialmente em ±8mm para
+            # dentro da própria peça (não fica no plano de corte),
+            # evitando colisão entre os pinos das duas peças.
+            # Posição radial vem de ray-cast na superfície real do
+            # capacete, garantindo que o pino encosta na casca externa
+            # sem furar a casca interna.
+            pin_front = _anchor_pin(
+                y_surf, z_surf, side='front', helmet_mesh=helmet,
+            )
+            pin_back = _anchor_pin(
+                y_surf, z_surf, side='back', helmet_mesh=helmet,
+            )
             if pin_front is None or pin_back is None:
                 continue
             try:
@@ -1035,20 +1041,6 @@ def split_into_two_parts(
                 back_part = union([back_part, pin_back])
             except Exception:
                 pass
-            # Canal de guia: rebaixo entre o pino e a borda do split,
-            # facilita a tira correr alinhada
-            groove_f = _guide_groove_cutter(y_surf, z_surf, side='front')
-            groove_b = _guide_groove_cutter(y_surf, z_surf, side='back')
-            if groove_f is not None:
-                try:
-                    front_part = difference([front_part, groove_f])
-                except Exception:
-                    pass
-            if groove_b is not None:
-                try:
-                    back_part = difference([back_part, groove_b])
-                except Exception:
-                    pass
         elif effective_closure == "slide_buckle":
             anchor = _strap_anchor(
                 y_surf, z_surf,
