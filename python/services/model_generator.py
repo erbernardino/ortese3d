@@ -605,20 +605,47 @@ def _rounded_plate(thickness, extension, width, sections=16):
     return plate
 
 
-def _flat_plate_xz(length_x, thickness_y, width_z, subdivisions=2):
+def _flat_plate_xz(length_x, thickness_y, width_z):
     """
-    Plate retangular tangente à casca, com cantos arredondados via
-    Taubin smoothing. Eixos: length em X (axial), thickness em Y
-    (radial-out), width em Z (tangencial).
+    Plate retangular tangente à casca, com cantos arredondados em XZ
+    (no plano da placa). Construção: box central + 4 cilindros nas
+    quinas via union — resultado watertight, manifold, pronto para
+    booleans encadeados.
+
+    Eixos: length em X (axial), thickness em Y (radial-out), width
+    em Z (tangencial).
     """
-    box = trimesh.creation.box(extents=(length_x, thickness_y, width_z))
-    for _ in range(subdivisions):
-        box = box.subdivide()
-    try:
-        trimesh.smoothing.filter_taubin(box, lamb=0.5, nu=-0.5, iterations=2)
-    except Exception:
-        pass
-    return box
+    radius = min(length_x, width_z) * 0.18
+    inner_x = max(0.001, length_x - 2 * radius)
+    inner_z = max(0.001, width_z - 2 * radius)
+
+    parts = []
+    parts.append(trimesh.creation.box(extents=(inner_x, thickness_y, inner_z)))
+    parts.append(trimesh.creation.box(extents=(inner_x, thickness_y, 2 * radius)))
+    parts[-1].apply_translation([0, 0, +(width_z / 2 - radius)])
+    parts.append(trimesh.creation.box(extents=(inner_x, thickness_y, 2 * radius)))
+    parts[-1].apply_translation([0, 0, -(width_z / 2 - radius)])
+    parts.append(trimesh.creation.box(extents=(2 * radius, thickness_y, inner_z)))
+    parts[-1].apply_translation([+(length_x / 2 - radius), 0, 0])
+    parts.append(trimesh.creation.box(extents=(2 * radius, thickness_y, inner_z)))
+    parts[-1].apply_translation([-(length_x / 2 - radius), 0, 0])
+    # 4 cilindros de quina (eixo Y para arredondar XZ)
+    R_zy = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
+    for sx, sz in [(+1, +1), (+1, -1), (-1, +1), (-1, -1)]:
+        cyl = trimesh.creation.cylinder(radius=radius, height=thickness_y, sections=12)
+        cyl.apply_transform(R_zy)
+        cyl.apply_translation([
+            sx * (length_x / 2 - radius), 0, sz * (width_z / 2 - radius),
+        ])
+        parts.append(cyl)
+
+    plate = parts[0]
+    for p in parts[1:]:
+        try:
+            plate = union([plate, p])
+        except Exception:
+            continue
+    return plate
 
 
 def _surface_radial_hit(mesh: trimesh.Trimesh, y_dir: float, z_dir: float,
@@ -730,36 +757,39 @@ def _anchor_pin(y_pos, z_pos, side='front', helmet_mesh=None,
     return pin
 
 
-def _hybrid_plate(y_pos, z_pos, side='front', helmet_mesh=None,
-                  plate_length=22.0, plate_thickness=4.0, plate_width=12.0,
-                  pin_offset_axial=6.0, slot_offset_axial=-6.0,
-                  slot_length=10.0, slot_height=3.5,
-                  pin_neck_radius=2.5, pin_head_radius=4.5,
-                  pin_neck_length=3.0, pin_head_length=2.5,
-                  base_height=1.5):
+def _loop_post_plate(y_pos, z_pos, side='front', helmet_mesh=None,
+                      plate_length=28.0, plate_thickness=4.5, plate_width=14.0,
+                      slot_offset_axial=-7.0,
+                      slot_length=10.0, slot_height=4.5, bar_width=2.5,
+                      post_offset_z=4.5, post_offset_axial=+7.0,
+                      post_neck_radius=2.5, post_head_radius=4.5,
+                      post_neck_length=3.5, post_head_length=2.0,
+                      base_height=1.5):
     """
-    Plate retangular alongado integrado à carcaça externa, contendo
-    pino cogumelo (snap-fit) + fenda oblonga (slide buckle) lado a
-    lado, no mesmo bloco. Sistema MyCRO Band híbrido:
+    Sistema de fechamento "elastic loop & post" da Ottobock MyCRO Band.
+    Plate retangular alongado integrado à carcaça externa, contendo:
 
-      [ slot oblongo ] [ pino cogumelo ]
-       (slide buckle)   (snap-fit final)
+      [ slot com barra transversal ]   [ post 1 ]
+                                       [ post 2 ]
+       (cordão entra/sai aqui,         (cordão contorna após
+        contornando a barra)            sair do slot)
 
-    A tira elástica (item separado) passa pela fenda permitindo
-    ajuste contínuo da tensão, depois o clipe na ponta da tira faz
-    snap-fit no pino. Travamento pela tensão da tira.
+    Componentes:
+      - Slot oblongo passante (atravessa o plate em direção radial-out),
+        dividido em 2 metades por uma barra transversal (= "pino
+        interno com furo passante" descrito pela Ottobock).
+      - 2 pinos cogumelo externos (posts) saindo do plate ao lado do
+        slot, deslocados tangencialmente em ±post_offset_z.
+
+    Mecanismo: o cordão elástico (item separado, não impresso) entra
+    pela 1ª metade do slot, contorna a barra transversal, sai pela
+    2ª metade, contorna o post 1, contorna o post 2, e volta para
+    fechar o loop. A tensão do cordão mantém tudo no lugar.
 
     Frame local:
       X = axial (paralelo à direção do split frente↔trás)
       Y = radial-out (sai da casca pra fora)
-      Z = tangencial (perpendicular ao split, ao longo da circunferência)
-
-    Posicionamento crítico:
-      - cx_center: o plate fica TODO dentro da peça (front ou back),
-        sem invadir o plano de corte.
-      - Posição radial via ray-cast: o plate encosta na superfície
-        externa real (que varia anatomicamente), nunca furando o
-        interior da casca.
+      Z = tangencial (ao longo da circunferência)
     """
     norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
     if norm < 1e-3:
@@ -796,69 +826,101 @@ def _hybrid_plate(y_pos, z_pos, side='front', helmet_mesh=None,
     base.apply_translation([0, base_height / 2, 0])
     plate = union([plate, base])
 
-    # Slot oblongo passante (atravessa o plate em Y, eixo longo em X)
+    # Slot oval passante dividido em 2 metades por barra transversal
+    # central (= "pino interno com furo passante" Ottobock). Cada
+    # metade do slot é um capsule (caixa + caps) com slot_length/2
+    # de comprimento, separadas por bar_width.
     slot_total_h = plate_thickness + base_height + 1.0
-    slot_box = trimesh.creation.box(extents=(
-        max(0.001, slot_length - slot_height),
-        slot_total_h,
-        slot_height,
-    ))
-    slot_box.apply_translation([slot_offset_axial, slot_total_h / 2, 0])
     R_zy = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
-    slot_caps = []
-    for s in (-1, +1):
-        cap = trimesh.creation.cylinder(
-            radius=slot_height / 2,
-            height=slot_total_h, sections=16,
-        )
-        cap.apply_transform(R_zy)
-        cap.apply_translation([
-            slot_offset_axial + s * (slot_length - slot_height) / 2,
-            slot_total_h / 2,
-            0,
-        ])
-        slot_caps.append(cap)
+    half_len = (slot_length - bar_width) / 2.0
+    cutters_local = []
+    for half_sign in (-1, +1):
+        # centro de cada metade no eixo X (axial), deslocado de bar
+        half_center_x = slot_offset_axial + half_sign * (bar_width / 2 + half_len / 2)
+        # caixa central da metade
+        half_box = trimesh.creation.box(extents=(
+            max(0.001, half_len - slot_height),
+            slot_total_h,
+            slot_height,
+        ))
+        half_box.apply_translation([half_center_x, slot_total_h / 2, 0])
+        cutters_local.append(half_box)
+        # 2 caps (cilindros radiais) nas pontas da metade do slot
+        for s in (-1, +1):
+            cap = trimesh.creation.cylinder(
+                radius=slot_height / 2,
+                height=slot_total_h, sections=16,
+            )
+            cap.apply_transform(R_zy)
+            cap.apply_translation([
+                half_center_x + s * (half_len - slot_height) / 2,
+                slot_total_h / 2,
+                0,
+            ])
+            cutters_local.append(cap)
 
-    cutters_local = [slot_box] + slot_caps
     for c in cutters_local:
         try:
             plate = difference([plate, c])
         except Exception:
             continue
 
-    # Pino cogumelo no frame local (eixo Y_local = radial-out).
-    # IMPORTANTE: o pino_neck deve ATRAVESSAR a face superior do
-    # plate (sobreposição volumétrica) para que o boolean union funda
-    # plate+pino em mesh único. Tangente sem sobreposição produz
-    # componente desconexa.
-    plate_top = plate_thickness + base_height       # topo do plate
-    pin_overlap = 1.5                                # quanto o pino entra no plate
-    neck_total = pin_neck_length + pin_overlap
-    pin_neck = trimesh.creation.cylinder(
-        radius=pin_neck_radius, height=neck_total, sections=16,
-    )
-    pin_neck.apply_transform(R_zy)
-    pin_neck.apply_translation([
-        pin_offset_axial,
-        plate_top - pin_overlap + neck_total / 2,
-        0,
-    ])
-    pin_head = trimesh.creation.cylinder(
-        radius=pin_head_radius, height=pin_head_length, sections=20,
-    )
-    pin_head.apply_transform(R_zy)
-    pin_head.apply_translation([
-        pin_offset_axial,
-        plate_top + pin_neck_length + pin_head_length / 2,
-        0,
-    ])
+    # 2 pinos cogumelo externos (posts) ao lado do slot, deslocados
+    # tangencialmente em ±post_offset_z. O cordão contorna estes
+    # pinos após sair do slot. Sobreposições volumétricas críticas:
+    #   - neck atravessa o topo do plate em post_overlap (funde com plate)
+    #   - head sobrepõe topo do neck em head_overlap (funde com neck)
+    # Tangente sem sobreposição = boolean union NÃO funde -> componente
+    # desconexa que some do mesh final.
+    plate_top = plate_thickness + base_height
+    post_overlap = 1.5
+    head_overlap = 0.5
+    neck_total = post_neck_length + post_overlap
+    posts = []
+    for sign_z in (-1, +1):
+        post_z = sign_z * post_offset_z
+        neck = trimesh.creation.cylinder(
+            radius=post_neck_radius, height=neck_total, sections=16,
+        )
+        neck.apply_transform(R_zy)
+        neck.apply_translation([
+            post_offset_axial,
+            plate_top - post_overlap + neck_total / 2,
+            post_z,
+        ])
+        head = trimesh.creation.cylinder(
+            radius=post_head_radius, height=post_head_length, sections=20,
+        )
+        head.apply_transform(R_zy)
+        head.apply_translation([
+            post_offset_axial,
+            plate_top + post_neck_length - head_overlap + post_head_length / 2,
+            post_z,
+        ])
+        try:
+            post = union([neck, head])
+            posts.append(post)
+        except Exception:
+            posts.append(neck)
+            posts.append(head)
+
+    for p in posts:
+        try:
+            plate = union([plate, p])
+        except Exception:
+            continue
+
+    # Reparo final: o encadeamento de booleans (union+difference+union)
+    # pode deixar o mesh em estado degenerado. Reprocessa para garantir
+    # watertight/volume, sem o que o boolean de juntar este plate ao
+    # casco no caller falha silenciosamente com 'Not all meshes are
+    # volumes!' e os posts somem do STL final.
     try:
-        pin = union([pin_neck, pin_head])
-        plate = union([plate, pin])
+        plate.process(validate=True)
+        trimesh.repair.fix_normals(plate)
+        if not plate.is_watertight:
+            trimesh.repair.fill_holes(plate)
     except Exception:
-        # Fallback: mesmo sem fundir manifold, retorna o plate.
-        # Pino fica como componente isolada — usuário pode querer
-        # imprimir e colar separadamente.
         pass
 
     # Como a casca é curva e o plate é plano, em x=±plate_length/2 a
@@ -1114,7 +1176,7 @@ def split_into_two_parts(
     helmet: trimesh.Trimesh,
     outer_dims,
     pin_count: int = 2,
-    closure_type: str = "hybrid_plate",
+    closure_type: str = "loop_post",
     use_slide_latch: bool = True,           # legado, lido se closure_type='slide_latch'
     pin_radius: float = 2.5,                # parafuso M5 (modo legado)
     lug_extension: float = 14.0,
@@ -1126,13 +1188,14 @@ def split_into_two_parts(
     coronal (YZ em x=0).
 
     closure_type:
-      'hybrid_plate' (padrão) — placa retangular alongada integrada
-        à carcaça externa de cada peça com pino cogumelo + fenda
-        oblonga lado a lado. A tira elástica passa pela fenda
-        (ajuste contínuo da tensão) e o clipe na ponta da tira
-        faz snap-fit no pino (travamento pela tensão).
-      'snap_pin' — só o pino cogumelo direto na carcaça (sem plate
-        integrado, sem fenda).
+      'loop_post' (padrão) — sistema Ottobock MyCRO Band: plate
+        retangular com slot oval dividido por barra transversal
+        ("pino interno com furo passante") + 2 pinos cogumelo
+        externos (posts). Cordão elástico em loop fechado contorna
+        a barra interna, sai pelo slot, contorna os 2 posts.
+        Tensão do cordão mantém o fechamento. Cordão é consumível
+        substituível pelo cuidador, sem ferramenta.
+      'snap_pin' — só o pino cogumelo direto na carcaça.
       'slide_buckle' — fivela slide com 2 fendas e barra central
         na peça traseira + âncora de tira (D-ring) na peça frontal.
         Tira de tecido/velcro com keeper elástico.
@@ -1173,28 +1236,31 @@ def split_into_two_parts(
     # mesmo com closure_type padrão; útil pra clientes antigos da API)
     effective_closure = closure_type
     if effective_closure not in (
-        "hybrid_plate", "snap_pin", "slide_buckle", "slide_latch", "simple",
+        "loop_post", "hybrid_plate", "snap_pin",
+        "slide_buckle", "slide_latch", "simple",
     ):
-        effective_closure = "hybrid_plate"
+        effective_closure = "loop_post"
     if use_slide_latch is False and effective_closure == "slide_latch":
         effective_closure = "simple"
 
     # Adiciona os fechos a cada metade independentemente
     for (y_surf, z_surf) in lug_layout:
-        if effective_closure == "hybrid_plate":
-            # Plate retangular com pino + fenda em cada peça (front e back).
-            # Tira elástica externa liga D↔D e E↔E, passando pela fenda
-            # (ajuste contínuo) e travando o clipe no pino (snap-fit).
-            plate_f = _hybrid_plate(y_surf, z_surf, side='front', helmet_mesh=helmet)
-            plate_b = _hybrid_plate(y_surf, z_surf, side='back',  helmet_mesh=helmet)
+        if effective_closure in ("loop_post", "hybrid_plate"):
+            # Sistema Ottobock MyCRO "elastic loop & post": plate com
+            # slot dividido por barra transversal + 2 pinos externos
+            # em cada peça. Cordão elástico contorna tudo em loop.
+            plate_f = _loop_post_plate(y_surf, z_surf, side='front', helmet_mesh=helmet)
+            plate_b = _loop_post_plate(y_surf, z_surf, side='back',  helmet_mesh=helmet)
             if plate_f is None or plate_b is None:
                 continue
+            # check_volume=False permite union mesmo se plate sai do
+            # encadeamento de booleans em estado degenerado.
             try:
-                front_part = union([front_part, plate_f])
+                front_part = union([front_part, plate_f], check_volume=False)
             except Exception:
                 pass
             try:
-                back_part = union([back_part, plate_b])
+                back_part = union([back_part, plate_b], check_volume=False)
             except Exception:
                 pass
         elif effective_closure == "snap_pin":
