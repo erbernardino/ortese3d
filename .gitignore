@@ -11,7 +11,8 @@ __pycache__/
 .pytest_cache/
 .coverage
 .agents/
-.claude/
+.claude/*
+!.claude/skills/
 .junie/
 .playwright-mcp/
 firestore-debug.log
