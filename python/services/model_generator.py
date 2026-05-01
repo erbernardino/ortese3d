@@ -605,6 +605,117 @@ def _rounded_plate(thickness, extension, width, sections=16):
     return plate
 
 
+def _anchor_pin(y_pos, z_pos, side='front',
+                base_radius=4.5, neck_radius=2.5, head_radius=4.5,
+                base_height=2.0, neck_length=3.5, head_length=2.5):
+    """
+    Pino de engate (anchor pin) tipo cogumelo, integrado direto à
+    superfície externa da carcaça. Sistema MyCRO Band: a tira
+    elástica (item separado, não impresso) tem um clipe na ponta
+    com fenda interna que abraça o pino por pressão (snap-fit).
+    O travamento é mantido pela tensão da tira elástica.
+
+    Eixo do pino = direção radial-out (sai pra fora da carcaça).
+    Geometria:
+      base   : cilindro curto (transição suave casca → pino)
+      neck   : cilindro fino (onde o clipe abraça)
+      head   : cilindro maior (segura o clipe contra a tensão)
+
+    side='front' posiciona em x≈0 levemente positivo; 'back'
+    em x≈0 levemente negativo (não causa overlap entre peças).
+    """
+    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
+    if norm < 0.001:
+        return None
+    ny, nz = y_pos / norm, z_pos / norm
+    angle = np.arctan2(nz, ny)
+    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+
+    # Frame local: eixo Y_local = radial-out (pino sai pra fora).
+    # Construo cilindros em Z e roto Z→Y_local.
+    R_zy = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])
+    # +90° em X leva +Z → -Y; -90° em X leva +Z → +Y. Quero +Y.
+    R_zy = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
+
+    parts = []
+    # base: começa em Y_local=0, vai até Y_local=base_height
+    base = trimesh.creation.cylinder(radius=base_radius, height=base_height, sections=20)
+    base.apply_transform(R_zy)
+    base.apply_translation([0, base_height / 2, 0])
+    parts.append(base)
+    # neck: continua acima da base
+    neck = trimesh.creation.cylinder(radius=neck_radius, height=neck_length, sections=16)
+    neck.apply_transform(R_zy)
+    neck.apply_translation([0, base_height + neck_length / 2, 0])
+    parts.append(neck)
+    # head: cilindro maior na ponta
+    head = trimesh.creation.cylinder(radius=head_radius, height=head_length, sections=20)
+    head.apply_transform(R_zy)
+    head.apply_translation([0, base_height + neck_length + head_length / 2, 0])
+    parts.append(head)
+
+    pin = parts[0]
+    for c in parts[1:]:
+        try:
+            pin = union([pin, c])
+        except Exception:
+            continue
+
+    # Aplica rotação radial + posiciona na superfície da carcaça
+    pin.apply_transform(R)
+    # Pequeno offset em X para evitar splits indesejados quando pino
+    # é unido à peça frontal/traseira (lugar perto do plano de corte)
+    cx = +0.5 if side == 'front' else -0.5
+    pin.apply_translation([cx, y_pos, z_pos])
+    return pin
+
+
+def _guide_groove_cutter(y_pos, z_pos, length_axial=22.0, depth=1.2,
+                          width_tangential=10.0, side='front'):
+    """
+    Canal de guia (rebaixo): cápsula rasa na superfície externa que
+    guia a tira lateralmente, evitando deslocamento. O canal corre
+    no eixo X (axial = direção do split frente↔trás).
+
+    Eixo da cápsula: X (axial). Dimensões locais:
+      length_axial      → comprimento na direção do split (X)
+      depth             → profundidade radial-in (entra na casca)
+      width_tangential  → largura tangencial (Z_local)
+    """
+    norm = (y_pos ** 2 + z_pos ** 2) ** 0.5
+    if norm < 0.001:
+        return None
+    ny, nz = y_pos / norm, z_pos / norm
+    angle = np.arctan2(nz, ny)
+    R = trimesh.transformations.rotation_matrix(angle, [1, 0, 0])
+
+    # Cápsula em Z (eixo longo), depois roda Z→X (axial)
+    cap = trimesh.creation.capsule(
+        radius=width_tangential / 2,
+        height=max(0.001, length_axial - width_tangential),
+        count=[12, 12],
+    )
+    R_zx = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0])
+    cap.apply_transform(R_zx)
+    # Achata no eixo radial-out (Y_local) para virar canal raso
+    # depois de aplicar R, então fazemos no frame local antes
+    # multiplicando vertices.
+    flat = depth / max(1e-6, width_tangential / 2)
+    # No frame local: eixo radial-out é Y. Após R_zx, capsule está
+    # com eixo X axial; suas dimensões Y/Z (= largura/altura) são
+    # ainda Y/Z. Achata Y para profundidade desejada.
+    cap.vertices[:, 1] *= flat
+
+    # Posiciona: centro da capsule fica na superfície (y_pos, z_pos);
+    # como achatamos em Y, o canal entra apenas `depth` na casca
+    cap.apply_transform(R)
+    # Pequeno offset axial para o canal terminar no plano de corte;
+    # x=±length/3 desloca o canal para o interior da peça
+    side_x = +length_axial / 3 if side == 'front' else -length_axial / 3
+    cap.apply_translation([side_x, y_pos, z_pos])
+    return cap
+
+
 def _strap_anchor(y_pos, z_pos, lug_thickness=6.0, lug_extension=14.0,
                   lug_width=22.0, slot_length=16.0, slot_height=4.0,
                   side='front'):
@@ -845,7 +956,7 @@ def split_into_two_parts(
     helmet: trimesh.Trimesh,
     outer_dims,
     pin_count: int = 2,
-    closure_type: str = "slide_buckle",
+    closure_type: str = "snap_pin",
     use_slide_latch: bool = True,           # legado, lido se closure_type='slide_latch'
     pin_radius: float = 2.5,                # parafuso M5 (modo legado)
     lug_extension: float = 14.0,
@@ -857,11 +968,14 @@ def split_into_two_parts(
     coronal (YZ em x=0).
 
     closure_type:
-      'slide_buckle' (padrão) — fivela slide com 2 fendas e barra
-        central na peça traseira + âncora de tira (D-ring) na peça
-        frontal. A tira de tecido/velcro passa pela fivela permitindo
-        ajuste contínuo da tensão. A sobra da tira é fixada por
-        keeper elástico (item separado).
+      'snap_pin' (padrão) — sistema MyCRO Band: anchor pin (cogumelo)
+        integrado direto na carcaça externa em cada lateral, com
+        canal de guia raso. Tira elástica + clipe snap-fit são itens
+        separados (não impressos): o clipe na ponta da tira abraça
+        o pino por pressão e a tensão da tira mantém o travamento.
+      'slide_buckle' — fivela slide com 2 fendas e barra central
+        na peça traseira + âncora de tira (D-ring) na peça frontal.
+        Tira de tecido/velcro com keeper elástico.
       'slide_latch' — keyhole Ottobock: pino cogumelo + slot keyhole.
         Fechamento rígido por encaixe + rotação tangencial.
       'simple' — lug com furo passante para parafuso M5.
@@ -898,14 +1012,44 @@ def split_into_two_parts(
     # Resolve closure_type (legado: use_slide_latch=True força slide_latch
     # mesmo com closure_type padrão; útil pra clientes antigos da API)
     effective_closure = closure_type
-    if effective_closure not in ("slide_buckle", "slide_latch", "simple"):
-        effective_closure = "slide_buckle"
+    if effective_closure not in ("snap_pin", "slide_buckle", "slide_latch", "simple"):
+        effective_closure = "snap_pin"
     if use_slide_latch is False and effective_closure == "slide_latch":
         effective_closure = "simple"
 
     # Adiciona os fechos a cada metade independentemente
     for (y_surf, z_surf) in lug_layout:
-        if effective_closure == "slide_buckle":
+        if effective_closure == "snap_pin":
+            # MyCRO: pino direto na carcaça externa de cada metade.
+            # Cada peça (frontal e traseira) recebe seu próprio pino;
+            # uma tira elástica externa conecta os pinos D↔D e E↔E.
+            pin_front = _anchor_pin(y_surf, z_surf, side='front')
+            pin_back = _anchor_pin(y_surf, z_surf, side='back')
+            if pin_front is None or pin_back is None:
+                continue
+            try:
+                front_part = union([front_part, pin_front])
+            except Exception:
+                pass
+            try:
+                back_part = union([back_part, pin_back])
+            except Exception:
+                pass
+            # Canal de guia: rebaixo entre o pino e a borda do split,
+            # facilita a tira correr alinhada
+            groove_f = _guide_groove_cutter(y_surf, z_surf, side='front')
+            groove_b = _guide_groove_cutter(y_surf, z_surf, side='back')
+            if groove_f is not None:
+                try:
+                    front_part = difference([front_part, groove_f])
+                except Exception:
+                    pass
+            if groove_b is not None:
+                try:
+                    back_part = difference([back_part, groove_b])
+                except Exception:
+                    pass
+        elif effective_closure == "slide_buckle":
             anchor = _strap_anchor(
                 y_surf, z_surf,
                 lug_thickness=max(6.0, lug_thickness * 0.75),
